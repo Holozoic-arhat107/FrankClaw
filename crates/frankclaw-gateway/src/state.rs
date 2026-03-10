@@ -4,8 +4,12 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use tokio_util::sync::CancellationToken;
 
+use frankclaw_channels::{web::WebChannel, ChannelSet};
+use frankclaw_core::channel::ChannelPlugin;
 use frankclaw_core::config::FrankClawConfig;
+use frankclaw_core::types::ChannelId;
 use frankclaw_core::types::ConnId;
+use frankclaw_runtime::Runtime;
 use frankclaw_sessions::SqliteSessionStore;
 
 use crate::broadcast::BroadcastHandle;
@@ -23,6 +27,12 @@ pub struct GatewayState {
 
     /// Connected WebSocket clients.
     pub clients: DashMap<ConnId, ClientState>,
+
+    /// Runtime orchestrator for model-backed chat flows.
+    pub runtime: Arc<Runtime>,
+
+    /// Loaded first-party channels.
+    pub channels: Arc<ChannelSet>,
 
     /// Monotonic connection counter.
     pub next_conn_id: std::sync::atomic::AtomicU64,
@@ -49,12 +59,16 @@ pub struct ClientState {
 impl GatewayState {
     pub fn new(
         config: FrankClawConfig,
-        sessions: SqliteSessionStore,
+        sessions: Arc<SqliteSessionStore>,
+        runtime: Arc<Runtime>,
+        channels: Arc<ChannelSet>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: ArcSwap::new(Arc::new(config)),
-            sessions: Arc::new(sessions),
+            sessions,
             clients: DashMap::new(),
+            runtime,
+            channels,
             next_conn_id: std::sync::atomic::AtomicU64::new(1),
             broadcast: BroadcastHandle::new(256),
             shutdown: CancellationToken::new(),
@@ -79,5 +93,13 @@ impl GatewayState {
     /// Get current config snapshot (cheap Arc clone).
     pub fn current_config(&self) -> Arc<FrankClawConfig> {
         self.config.load_full()
+    }
+
+    pub fn channel(&self, id: &ChannelId) -> Option<Arc<dyn ChannelPlugin>> {
+        self.channels.get(id).cloned()
+    }
+
+    pub fn web_channel(&self) -> Option<Arc<WebChannel>> {
+        self.channels.web()
     }
 }

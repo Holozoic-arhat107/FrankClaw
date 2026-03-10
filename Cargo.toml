@@ -4,6 +4,7 @@ members = [
     "crates/frankclaw-core",
     "crates/frankclaw-crypto",
     "crates/frankclaw-gateway",
+    "crates/frankclaw-runtime",
     "crates/frankclaw-sessions",
     "crates/frankclaw-models",
     "crates/frankclaw-channels",
@@ -110,6 +111,7 @@ async-trait = "0.1"
 frankclaw-core = { path = "crates/frankclaw-core" }
 frankclaw-crypto = { path = "crates/frankclaw-crypto" }
 frankclaw-gateway = { path = "crates/frankclaw-gateway" }
+frankclaw-runtime = { path = "crates/frankclaw-runtime" }
 frankclaw-sessions = { path = "crates/frankclaw-sessions" }
 frankclaw-models = { path = "crates/frankclaw-models" }
 frankclaw-channels = { path = "crates/frankclaw-channels" }

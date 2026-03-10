@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::auth::{AuthMode, RateLimitConfig};
+use crate::error::{FrankClawError, Result};
 use crate::session::{PruningConfig, SessionResetPolicy, SessionScoping};
 use crate::types::{AgentId, ChannelId};
 
@@ -36,6 +37,82 @@ impl Default for FrankClawConfig {
             media: MediaConfig::default(),
             security: SecurityConfig::default(),
         }
+    }
+}
+
+impl FrankClawConfig {
+    pub fn validate(&self) -> Result<()> {
+        self.gateway.auth.validate()?;
+
+        if !self.agents.agents.contains_key(&self.agents.default_agent) {
+            return Err(FrankClawError::ConfigValidation {
+                msg: format!(
+                    "default agent '{}' is not present in agents map",
+                    self.agents.default_agent
+                ),
+            });
+        }
+
+        let mut provider_ids = std::collections::HashSet::new();
+        for provider in &self.models.providers {
+            if provider.id.trim().is_empty() {
+                return Err(FrankClawError::ConfigValidation {
+                    msg: "model provider id cannot be empty".into(),
+                });
+            }
+            if !provider_ids.insert(provider.id.clone()) {
+                return Err(FrankClawError::ConfigValidation {
+                    msg: format!("duplicate model provider id '{}'", provider.id),
+                });
+            }
+            match provider.api.as_str() {
+                "openai" | "anthropic" | "ollama" => {}
+                other => {
+                    return Err(FrankClawError::ConfigValidation {
+                        msg: format!(
+                            "unsupported model provider api '{}'; expected openai, anthropic, or ollama",
+                            other
+                        ),
+                    });
+                }
+            }
+            if matches!(provider.api.as_str(), "openai" | "anthropic")
+                && provider
+                    .api_key_ref
+                    .as_deref()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                return Err(FrankClawError::ConfigValidation {
+                    msg: format!(
+                        "provider '{}' requires a non-empty api_key_ref",
+                        provider.id
+                    ),
+                });
+            }
+        }
+
+        if let Some(default_model) = &self.models.default_model {
+            if default_model.trim().is_empty() {
+                return Err(FrankClawError::ConfigValidation {
+                    msg: "models.default_model cannot be empty".into(),
+                });
+            }
+        }
+
+        if self.gateway.max_connections == 0 {
+            return Err(FrankClawError::ConfigValidation {
+                msg: "gateway.max_connections must be greater than 0".into(),
+            });
+        }
+
+        if self.gateway.max_ws_message_bytes == 0 {
+            return Err(FrankClawError::ConfigValidation {
+                msg: "gateway.max_ws_message_bytes must be greater than 0".into(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -339,5 +416,50 @@ impl Default for SecurityConfig {
             ssrf_protection: true,
             max_webhook_body_bytes: 1024 * 1024, // 1 MB
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_provider_ids_fail_validation() {
+        let mut config = FrankClawConfig::default();
+        config.models.providers = vec![
+            ProviderConfig {
+                id: "openai".into(),
+                api: "openai".into(),
+                base_url: None,
+                api_key_ref: Some("OPENAI_API_KEY".into()),
+                models: vec!["gpt-4o-mini".into()],
+                cooldown_secs: 30,
+            },
+            ProviderConfig {
+                id: "openai".into(),
+                api: "ollama".into(),
+                base_url: None,
+                api_key_ref: None,
+                models: vec!["llama3".into()],
+                cooldown_secs: 30,
+            },
+        ];
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn openai_provider_requires_api_key_ref() {
+        let mut config = FrankClawConfig::default();
+        config.models.providers = vec![ProviderConfig {
+            id: "openai".into(),
+            api: "openai".into(),
+            base_url: None,
+            api_key_ref: None,
+            models: vec!["gpt-4o-mini".into()],
+            cooldown_secs: 30,
+        }];
+
+        assert!(config.validate().is_err());
     }
 }

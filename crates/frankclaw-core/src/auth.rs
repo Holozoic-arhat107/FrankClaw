@@ -1,4 +1,4 @@
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 /// How the gateway authenticates incoming connections.
@@ -11,7 +11,10 @@ pub enum AuthMode {
     /// Bearer token (constant-time comparison).
     Token {
         /// The token is stored encrypted; this is the config reference.
-        #[serde(skip)]
+        #[serde(
+            serialize_with = "serialize_optional_secret_string",
+            deserialize_with = "deserialize_optional_secret_string"
+        )]
         token: Option<SecretString>,
     },
 
@@ -35,6 +38,64 @@ impl Default for AuthMode {
     fn default() -> Self {
         Self::None
     }
+}
+
+impl AuthMode {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        match self {
+            Self::Token { token } => {
+                if token
+                    .as_ref()
+                    .map(|token| token.expose_secret().trim().is_empty())
+                    .unwrap_or(true)
+                {
+                    return Err(crate::error::FrankClawError::ConfigValidation {
+                        msg: "gateway.auth.mode=token requires a non-empty token".into(),
+                    });
+                }
+            }
+            Self::Password { hash } => {
+                if hash.trim().is_empty() {
+                    return Err(crate::error::FrankClawError::ConfigValidation {
+                        msg: "gateway.auth.mode=password requires a non-empty hash".into(),
+                    });
+                }
+            }
+            Self::TrustedProxy { identity_header } => {
+                if identity_header.trim().is_empty() {
+                    return Err(crate::error::FrankClawError::ConfigValidation {
+                        msg: "trusted_proxy auth requires an identity_header".into(),
+                    });
+                }
+            }
+            Self::None | Self::Tailscale => {}
+        }
+
+        Ok(())
+    }
+}
+
+fn serialize_optional_secret_string<S>(
+    value: &Option<SecretString>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(secret) => serializer.serialize_some(secret.expose_secret()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_optional_secret_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SecretString>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+        .map(|value| value.map(SecretString::from))
 }
 
 /// Authorization role for a connected client.
@@ -71,5 +132,37 @@ impl Default for RateLimitConfig {
             window_secs: 60,
             lockout_secs: 300,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_mode_roundtrips_through_serde() {
+        let auth = AuthMode::Token {
+            token: Some(SecretString::from("secret-token")),
+        };
+
+        let json = serde_json::to_string(&auth).expect("token mode should serialize");
+        let decoded: AuthMode =
+            serde_json::from_str(&json).expect("token mode should deserialize");
+
+        match decoded {
+            AuthMode::Token { token } => {
+                assert_eq!(
+                    token.expect("token should be present").expose_secret(),
+                    "secret-token"
+                );
+            }
+            other => panic!("unexpected auth mode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn token_mode_requires_a_value() {
+        let auth = AuthMode::Token { token: None };
+        assert!(auth.validate().is_err());
     }
 }

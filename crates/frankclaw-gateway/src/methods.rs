@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use frankclaw_core::protocol::{RequestFrame, ResponseFrame};
+use frankclaw_core::protocol::{EventFrame, EventType, Frame, RequestFrame, ResponseFrame};
 use frankclaw_core::session::SessionStore;
 use frankclaw_core::types::AgentId;
 
@@ -72,5 +72,91 @@ pub async fn chat_history(
             ResponseFrame::ok(request.id, serde_json::json!({ "entries": json }))
         }
         Err(e) => ResponseFrame::err(request.id, 500, e.to_string()),
+    }
+}
+
+/// Handle `chat.send` method.
+pub async fn chat_send(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let message = match request.params.get("message").and_then(|value| value.as_str()) {
+        Some(message) if !message.trim().is_empty() => message.to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "message is required"),
+    };
+
+    let agent_id = request
+        .params
+        .get("agent_id")
+        .and_then(|value| value.as_str())
+        .map(AgentId::new);
+    let session_key = request
+        .params
+        .get("session_key")
+        .and_then(|value| value.as_str())
+        .map(frankclaw_core::types::SessionKey::from_raw);
+    let model_id = request
+        .params
+        .get("model_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let max_tokens = request
+        .params
+        .get("max_tokens")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32);
+    let temperature = request
+        .params
+        .get("temperature")
+        .and_then(|value| value.as_f64())
+        .map(|value| value as f32);
+
+    match state
+        .runtime
+        .chat(frankclaw_runtime::ChatRequest {
+            agent_id,
+            session_key,
+            message,
+            model_id,
+            max_tokens,
+            temperature,
+        })
+        .await
+    {
+        Ok(response) => {
+            let event = Frame::Event(EventFrame {
+                event: EventType::ChatComplete,
+                payload: serde_json::json!({
+                    "session_key": response.session_key.as_str(),
+                    "model_id": response.model_id,
+                    "content": response.content,
+                }),
+            });
+            if let Ok(json) = serde_json::to_string(&event) {
+                let _ = state.broadcast.send(json);
+            }
+
+            ResponseFrame::ok(
+                request.id,
+                serde_json::json!({
+                    "session_key": response.session_key.as_str(),
+                    "model_id": response.model_id,
+                    "content": response.content,
+                    "usage": response.usage,
+                }),
+            )
+        }
+        Err(err) => {
+            let event = Frame::Event(EventFrame {
+                event: EventType::ChatError,
+                payload: serde_json::json!({
+                    "message": err.to_string(),
+                }),
+            });
+            if let Ok(json) = serde_json::to_string(&event) {
+                let _ = state.broadcast.send(json);
+            }
+            ResponseFrame::err(request.id, err.status_code(), err.to_string())
+        }
     }
 }

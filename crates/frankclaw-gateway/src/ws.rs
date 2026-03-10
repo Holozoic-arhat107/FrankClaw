@@ -158,6 +158,9 @@ async fn dispatch_method(
             let safe_config = redact_config(&config);
             ResponseFrame::ok(request.id, safe_config)
         }
+        Method::ChatSend => {
+            crate::methods::chat_send(state, request).await
+        }
         Method::SessionsList => {
             crate::methods::sessions_list(state, request).await
         }
@@ -165,10 +168,29 @@ async fn dispatch_method(
             crate::methods::chat_history(state, request).await
         }
         Method::ChannelsList => {
-            ResponseFrame::ok(request.id, serde_json::json!({ "channels": [] }))
+            let channels: Vec<_> = state
+                .channels
+                .channels()
+                .keys()
+                .map(|channel| channel.as_str().to_string())
+                .collect();
+            ResponseFrame::ok(request.id, serde_json::json!({ "channels": channels }))
+        }
+        Method::ChannelsStatus => {
+            let mut statuses = Vec::new();
+            for (channel_id, channel) in state.channels.channels() {
+                let health = channel.health().await;
+                statuses.push(serde_json::json!({
+                    "id": channel_id.as_str(),
+                    "label": channel.label(),
+                    "health": health,
+                }));
+            }
+            ResponseFrame::ok(request.id, serde_json::json!({ "channels": statuses }))
         }
         Method::ModelsList => {
-            ResponseFrame::ok(request.id, serde_json::json!({ "models": [] }))
+            let models = serde_json::to_value(state.runtime.list_models()).unwrap_or_default();
+            ResponseFrame::ok(request.id, serde_json::json!({ "models": models }))
         }
         _ => ResponseFrame::err(
             request.id,

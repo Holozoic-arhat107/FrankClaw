@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 frankclaw-core = { workspace = true }
 frankclaw-crypto = { workspace = true }
+frankclaw-channels = { workspace = true }
+frankclaw-runtime = { workspace = true }
 frankclaw-sessions = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }

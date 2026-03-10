@@ -48,8 +48,66 @@ enum Command {
     /// Validate config file.
     Check,
 
+    /// Run high-signal validation and readiness checks.
+    Doctor,
+
     /// Show resolved configuration (secrets redacted).
     Config,
+
+    /// Send a message through the local runtime.
+    MessageSend {
+        /// Message text to send.
+        #[arg(long)]
+        message: String,
+
+        /// Target agent ID.
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Explicit session key.
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Override model ID.
+        #[arg(long)]
+        model: Option<String>,
+    },
+
+    /// List available models from configured providers.
+    ModelsList,
+
+    /// Session inspection commands.
+    SessionsList {
+        /// Agent ID to list sessions for.
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Maximum sessions to return.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// Offset for pagination.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+
+    /// Show transcript entries for a session.
+    SessionsGet {
+        /// Session key.
+        #[arg(long)]
+        session: String,
+
+        /// Maximum transcript entries to return.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+
+    /// Clear transcript entries for a session.
+    SessionsReset {
+        /// Session key.
+        #[arg(long)]
+        session: String,
+    },
 
     /// Initialize a new config file with secure defaults.
     Init {
@@ -83,11 +141,21 @@ async fn main() -> anyhow::Result<()> {
             if let Some(port) = port {
                 config.gateway.port = port;
             }
+            config.validate()?;
 
             let db_path = state_dir.join("sessions.db");
-            let sessions =
+            let sessions = std::sync::Arc::new(
                 frankclaw_sessions::SqliteSessionStore::open(&db_path, None)
-                    .context("failed to open session store")?;
+                    .context("failed to open session store")?,
+            );
+            let runtime = std::sync::Arc::new(
+                frankclaw_runtime::Runtime::from_config(
+                    &config,
+                    sessions.clone() as std::sync::Arc<dyn frankclaw_core::session::SessionStore>,
+                )
+                .await
+                .context("failed to initialize runtime")?,
+            );
 
             info!(
                 port = config.gateway.port,
@@ -95,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
                 "starting frankclaw gateway"
             );
 
-            frankclaw_gateway::server::run(config, sessions).await?;
+            frankclaw_gateway::server::run(config, sessions, runtime).await?;
         }
 
         Command::GenToken => {
@@ -113,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Check => {
             let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
             println!("Configuration is valid.");
             println!("  Gateway port: {}", config.gateway.port);
             println!("  Auth mode: {:?}", config.gateway.auth);
@@ -120,10 +189,123 @@ async fn main() -> anyhow::Result<()> {
             println!("  Providers: {}", config.models.providers.len());
         }
 
+        Command::Doctor => {
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+
+            let mut warnings = Vec::new();
+            if config.models.providers.is_empty() {
+                warnings.push("no model providers configured");
+            }
+            if config.channels.is_empty() {
+                warnings.push("no channels configured");
+            }
+            if !config.security.encrypt_sessions {
+                warnings.push("session encryption is disabled");
+            }
+
+            println!("Doctor check passed.");
+            if warnings.is_empty() {
+                println!("  No obvious misconfigurations found.");
+            } else {
+                println!("  Warnings:");
+                for warning in warnings {
+                    println!("    - {warning}");
+                }
+            }
+        }
+
         Command::Config => {
             let config = load_config(cli.config.as_deref(), &state_dir)?;
-            let json = serde_json::to_string_pretty(&config)?;
+            let json = serde_json::to_string_pretty(&redact_config(&config))?;
             println!("{json}");
+        }
+
+        Command::MessageSend {
+            message,
+            agent,
+            session,
+            model,
+        } => {
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+            let sessions = open_sessions(&state_dir)?;
+            let runtime = build_runtime(&config, sessions.clone()).await?;
+
+            let response = runtime
+                .chat(frankclaw_runtime::ChatRequest {
+                    agent_id: agent.map(frankclaw_core::types::AgentId::new),
+                    session_key: session.map(frankclaw_core::types::SessionKey::from_raw),
+                    message,
+                    model_id: model,
+                    max_tokens: None,
+                    temperature: None,
+                })
+                .await?;
+
+            println!("Session: {}", response.session_key);
+            println!("Model:   {}", response.model_id);
+            println!();
+            println!("{}", response.content);
+        }
+
+        Command::ModelsList => {
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+            let sessions = open_sessions(&state_dir)?;
+            let runtime = build_runtime(&config, sessions).await?;
+
+            for model in runtime.list_models() {
+                println!("{} ({:?})", model.id, model.api);
+            }
+        }
+
+        Command::SessionsList {
+            agent,
+            limit,
+            offset,
+        } => {
+            use frankclaw_core::session::SessionStore;
+
+            let sessions = open_sessions(&state_dir)?;
+            let agent_id = agent
+                .map(frankclaw_core::types::AgentId::new)
+                .unwrap_or_else(frankclaw_core::types::AgentId::default_agent);
+            let entries = sessions.list(&agent_id, limit, offset).await?;
+
+            for entry in entries {
+                println!(
+                    "{}  channel={}  account={}",
+                    entry.key, entry.channel, entry.account_id
+                );
+            }
+        }
+
+        Command::SessionsGet { session, limit } => {
+            use frankclaw_core::session::SessionStore;
+
+            let sessions = open_sessions(&state_dir)?;
+            let entries = sessions
+                .get_transcript(
+                    &frankclaw_core::types::SessionKey::from_raw(session),
+                    limit,
+                    None,
+                )
+                .await?;
+
+            for entry in entries {
+                println!("[{}] {:?}: {}", entry.seq, entry.role, entry.content);
+            }
+        }
+
+        Command::SessionsReset { session } => {
+            use frankclaw_core::session::SessionStore;
+
+            let sessions = open_sessions(&state_dir)?;
+            sessions
+                .clear_transcript(&frankclaw_core::types::SessionKey::from_raw(session))
+                .await?;
+            println!("Session transcript cleared.");
         }
 
         Command::Init { force } => {
@@ -199,4 +381,58 @@ fn read_password() -> anyhow::Result<secrecy::SecretString> {
         .read_line(&mut input)
         .context("failed to read password")?;
     Ok(secrecy::SecretString::from(input.trim().to_string()))
+}
+
+fn open_sessions(
+    state_dir: &std::path::Path,
+) -> anyhow::Result<std::sync::Arc<frankclaw_sessions::SqliteSessionStore>> {
+    let db_path = state_dir.join("sessions.db");
+    Ok(std::sync::Arc::new(
+        frankclaw_sessions::SqliteSessionStore::open(&db_path, None)
+            .context("failed to open session store")?,
+    ))
+}
+
+async fn build_runtime(
+    config: &frankclaw_core::config::FrankClawConfig,
+    sessions: std::sync::Arc<frankclaw_sessions::SqliteSessionStore>,
+) -> anyhow::Result<std::sync::Arc<frankclaw_runtime::Runtime>> {
+    Ok(std::sync::Arc::new(
+        frankclaw_runtime::Runtime::from_config(
+            config,
+            sessions as std::sync::Arc<dyn frankclaw_core::session::SessionStore>,
+        )
+        .await
+        .context("failed to initialize runtime")?,
+    ))
+}
+
+fn redact_config(config: &frankclaw_core::config::FrankClawConfig) -> serde_json::Value {
+    let mut val = serde_json::to_value(config).unwrap_or(serde_json::json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        if let Some(gateway) = obj.get_mut("gateway").and_then(|value| value.as_object_mut()) {
+            if let Some(auth) = gateway.get_mut("auth").and_then(|value| value.as_object_mut()) {
+                if let Some(token) = auth.get_mut("token") {
+                    *token = serde_json::json!("[REDACTED]");
+                }
+                if let Some(hash) = auth.get_mut("hash") {
+                    *hash = serde_json::json!("[REDACTED]");
+                }
+            }
+        }
+
+        if let Some(models) = obj.get_mut("models").and_then(|value| value.as_object_mut()) {
+            if let Some(providers) = models
+                .get_mut("providers")
+                .and_then(|value| value.as_array_mut())
+            {
+                for provider in providers {
+                    if let Some(api_key_ref) = provider.get_mut("api_key_ref") {
+                        *api_key_ref = serde_json::json!("[REDACTED]");
+                    }
+                }
+            }
+        }
+    }
+    val
 }

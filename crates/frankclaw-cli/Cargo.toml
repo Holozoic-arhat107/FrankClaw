@@ -12,6 +12,7 @@ path = "src/main.rs"
 frankclaw-core = { workspace = true }
 frankclaw-crypto = { workspace = true }
 frankclaw-gateway = { workspace = true }
+frankclaw-runtime = { workspace = true }
 frankclaw-sessions = { workspace = true }
 frankclaw-models = { workspace = true }
 frankclaw-channels = { workspace = true }

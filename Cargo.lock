@@ -693,6 +693,7 @@ dependencies = [
  "frankclaw-memory",
  "frankclaw-models",
  "frankclaw-plugin-sdk",
+ "frankclaw-runtime",
  "frankclaw-sessions",
  "secrecy",
  "serde",
@@ -782,8 +783,10 @@ dependencies = [
  "axum-extra",
  "chrono",
  "dashmap",
+ "frankclaw-channels",
  "frankclaw-core",
  "frankclaw-crypto",
+ "frankclaw-runtime",
  "frankclaw-sessions",
  "futures-util",
  "secrecy",
@@ -853,6 +856,21 @@ dependencies = [
  "async-trait",
  "frankclaw-core",
  "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "frankclaw-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "frankclaw-core",
+ "frankclaw-models",
+ "frankclaw-sessions",
+ "secrecy",
  "serde_json",
  "tokio",
  "tracing",

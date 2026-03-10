@@ -1,0 +1,16 @@
+[package]
+name = "frankclaw-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+frankclaw-core = { workspace = true }
+frankclaw-models = { workspace = true }
+frankclaw-sessions = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
