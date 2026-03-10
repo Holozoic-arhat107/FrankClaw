@@ -27,6 +27,10 @@ impl TelegramChannel {
             .build()
             .expect("failed to build HTTP client");
 
+        Self::with_client(bot_token, client)
+    }
+
+    pub(crate) fn with_client(bot_token: SecretString, client: Client) -> Self {
         Self {
             bot_token,
             client,
@@ -103,6 +107,7 @@ impl TelegramChannel {
         let sender_id = msg["from"]["id"].as_i64()?.to_string();
         let sender_name = msg["from"]["first_name"].as_str().map(String::from);
         let text = msg["text"].as_str().map(String::from);
+        let topic_id = msg["message_thread_id"].as_i64();
         let is_group = matches!(
             msg["chat"]["type"].as_str(),
             Some("group") | Some("supergroup")
@@ -122,7 +127,7 @@ impl TelegramChannel {
             account_id: "default".to_string(),
             sender_id,
             sender_name,
-            thread_id: Some(chat_id.to_string()),
+            thread_id: Some(encode_thread_id(chat_id, topic_id)),
             is_group,
             is_mention: text
                 .as_deref()
@@ -194,17 +199,7 @@ impl ChannelPlugin for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
-        let chat_id = msg
-            .thread_id
-            .as_deref()
-            .or(Some(&msg.to))
-            .unwrap_or(&msg.to);
-
-        let body = serde_json::json!({
-            "chat_id": chat_id,
-            "text": msg.text,
-            "parse_mode": "Markdown",
-        });
+        let body = build_send_body(&msg);
 
         let resp = self
             .client
@@ -259,5 +254,101 @@ impl ChannelPlugin for TelegramChannel {
             channel: self.id(),
             msg: "edit requires chat context (not yet implemented)".into(),
         })
+    }
+}
+
+fn encode_thread_id(chat_id: i64, topic_id: Option<i64>) -> String {
+    match topic_id {
+        Some(topic_id) => format!("{chat_id}:topic:{topic_id}"),
+        None => chat_id.to_string(),
+    }
+}
+
+fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
+    let (chat_id, topic_id) = parse_target_thread(msg.thread_id.as_deref(), &msg.to);
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": msg.text,
+        "parse_mode": "Markdown",
+    });
+
+    if let Some(topic_id) = topic_id {
+        body["message_thread_id"] = serde_json::json!(topic_id);
+    }
+
+    body
+}
+
+fn parse_target_thread(thread_id: Option<&str>, fallback_to: &str) -> (String, Option<i64>) {
+    let raw = thread_id.unwrap_or(fallback_to);
+    if let Some((chat_id, topic_id)) = raw.split_once(":topic:") {
+        return (
+            chat_id.to_string(),
+            topic_id.parse::<i64>().ok(),
+        );
+    }
+
+    (raw.to_string(), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_message_uses_topic_thread_id_when_present() {
+        let channel = TelegramChannel::new(SecretString::from("token".to_string()));
+        let inbound = channel
+            .parse_message(&serde_json::json!({
+                "message_id": 99,
+                "message_thread_id": 7,
+                "date": 1_700_000_000,
+                "text": "@bot hello",
+                "chat": {
+                    "id": -100123,
+                    "type": "supergroup"
+                },
+                "from": {
+                    "id": 42,
+                    "first_name": "User"
+                }
+            }))
+            .expect("message should parse");
+
+        assert_eq!(inbound.thread_id.as_deref(), Some("-100123:topic:7"));
+        assert!(inbound.is_group);
+        assert!(inbound.is_mention);
+    }
+
+    #[test]
+    fn build_send_body_uses_topic_targeting_when_thread_id_encodes_topic() {
+        let body = build_send_body(&OutboundMessage {
+            channel: ChannelId::new("telegram"),
+            account_id: "default".into(),
+            to: "42".into(),
+            thread_id: Some("-100123:topic:7".into()),
+            text: "hello".into(),
+            attachments: Vec::new(),
+            reply_to: None,
+        });
+
+        assert_eq!(body["chat_id"], serde_json::json!("-100123"));
+        assert_eq!(body["message_thread_id"], serde_json::json!(7));
+    }
+
+    #[test]
+    fn build_send_body_falls_back_to_recipient_without_topic() {
+        let body = build_send_body(&OutboundMessage {
+            channel: ChannelId::new("telegram"),
+            account_id: "default".into(),
+            to: "42".into(),
+            thread_id: None,
+            text: "hello".into(),
+            attachments: Vec::new(),
+            reply_to: None,
+        });
+
+        assert_eq!(body["chat_id"], serde_json::json!("42"));
+        assert!(body.get("message_thread_id").is_none());
     }
 }

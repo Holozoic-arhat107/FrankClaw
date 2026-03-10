@@ -47,6 +47,14 @@ The binary is at `target/debug/frankclaw` (or `target/release/frankclaw`).
 - Token comparison always constant-time
 - No `.unwrap()` in production code; use `.expect("invariant: reason")` only for provably safe cases
 
+## Feature Development Rules
+
+- When adding new features, refactor where it makes sense instead of duplicating logic.
+- Abstract shared behavior once there are multiple call sites or a clear stable boundary.
+- Prefer small, composable components over large feature-specific codepaths.
+- Every feature addition should include unit tests for the new behavior and any extracted shared logic.
+- Treat regression resistance as part of feature work: do not land new capability without test coverage that protects the existing path.
+
 ## Security Rules
 
 - Gateway **refuses** to bind to non-loopback addresses without auth configured (hard error, not a warning)
