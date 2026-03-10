@@ -9,7 +9,7 @@ use std::sync::Arc;
 use secrecy::SecretString;
 
 use frankclaw_core::channel::ChannelPlugin;
-use frankclaw_core::config::FrankClawConfig;
+use frankclaw_core::config::{ChannelConfig, FrankClawConfig};
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
@@ -41,43 +41,55 @@ pub fn load_from_config(config: &FrankClawConfig) -> Result<ChannelSet> {
             continue;
         }
 
-        match channel_id.as_str() {
-            "web" => {
-                let web = Arc::new(web::WebChannel::new());
+        match build_channel(channel_id, channel_config)? {
+            LoadedChannel::Web(web) => {
                 channels.insert(channel_id.clone(), web.clone());
                 web_handle = Some(web);
             }
-            "telegram" => {
-                let account = channel_config.accounts.first().ok_or_else(|| {
-                    FrankClawError::ConfigValidation {
-                        msg: "telegram channel requires at least one account".into(),
-                    }
-                })?;
-                let bot_token = resolve_channel_secret(
-                    account,
-                    &["bot_token", "token"],
-                    &["bot_token_env", "token_env"],
-                    "TELEGRAM_BOT_TOKEN",
-                    "telegram",
-                )?;
-                let telegram = Arc::new(telegram::TelegramChannel::new(bot_token));
-                channels.insert(channel_id.clone(), telegram);
+            LoadedChannel::Standard(channel) => {
+                channels.insert(channel_id.clone(), channel);
             }
-            other => {
-                return Err(FrankClawError::ConfigValidation {
-                    msg: format!(
-                        "unsupported enabled channel '{}'; currently supported: web, telegram",
-                        other
-                    ),
-                });
-            }
-        }
+        };
     }
 
     Ok(ChannelSet {
         channels,
         web: web_handle,
     })
+}
+
+enum LoadedChannel {
+    Standard(Arc<dyn ChannelPlugin>),
+    Web(Arc<web::WebChannel>),
+}
+
+fn build_channel(channel_id: &ChannelId, channel_config: &ChannelConfig) -> Result<LoadedChannel> {
+    match channel_id.as_str() {
+        "web" => Ok(LoadedChannel::Web(Arc::new(web::WebChannel::new()))),
+        "telegram" => {
+            let account = channel_config.accounts.first().ok_or_else(|| {
+                FrankClawError::ConfigValidation {
+                    msg: "telegram channel requires at least one account".into(),
+                }
+            })?;
+            let bot_token = resolve_channel_secret(
+                account,
+                &["bot_token", "token"],
+                &["bot_token_env", "token_env"],
+                "TELEGRAM_BOT_TOKEN",
+                "telegram",
+            )?;
+            Ok(LoadedChannel::Standard(Arc::new(
+                telegram::TelegramChannel::new(bot_token),
+            )))
+        }
+        other => Err(FrankClawError::ConfigValidation {
+            msg: format!(
+                "unsupported enabled channel '{}'; currently supported: web, telegram",
+                other
+            ),
+        }),
+    }
 }
 
 fn resolve_channel_secret(
@@ -129,4 +141,47 @@ fn resolve_env_secret(env_name: &str, channel: &str) -> Result<SecretString> {
     }
 
     Ok(SecretString::from(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_from_config_builds_web_channel() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("web"),
+            ChannelConfig {
+                enabled: true,
+                accounts: Vec::new(),
+                extra: serde_json::json!({}),
+            },
+        );
+
+        let channels = load_from_config(&config).expect("channels should load");
+        assert!(channels.web().is_some());
+        assert!(channels.get(&ChannelId::new("web")).is_some());
+    }
+
+    #[test]
+    fn load_from_config_builds_telegram_from_inline_token() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("telegram"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "bot_token": "test-token"
+                })],
+                extra: serde_json::json!({}),
+            },
+        );
+
+        let channels = load_from_config(&config).expect("channels should load");
+        let channel = channels
+            .get(&ChannelId::new("telegram"))
+            .expect("telegram channel should exist");
+        assert_eq!(channel.label(), "Telegram");
+    }
 }
