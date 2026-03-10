@@ -78,7 +78,7 @@ Acceptance:
 
 ### M3: Ingress Hardening
 
-- [ ] DM pairing / allowlist enforcement
+- [x] DM pairing / allowlist enforcement
 - [x] Group mention gating by default
 - [x] Per-channel-peer session policy wired into runtime
 - [x] Inbound message size limits and normalization
@@ -115,7 +115,7 @@ Acceptance:
 
 - [x] Add `doctor`
 - [x] Add `message send`
-- [ ] Add `pairing list|approve`
+- [x] Add `pairing list|approve`
 - [x] Add `sessions list|get|reset`
 - [x] Add `models list`
 

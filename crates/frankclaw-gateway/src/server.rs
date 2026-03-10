@@ -23,6 +23,7 @@ use frankclaw_runtime::Runtime;
 use frankclaw_sessions::SqliteSessionStore;
 
 use crate::auth::{authenticate, validate_bind_auth, AuthCredential};
+use crate::pairing::PairingStore;
 use crate::rate_limit::AuthRateLimiter;
 use crate::state::GatewayState;
 
@@ -31,6 +32,7 @@ pub async fn run(
     config: FrankClawConfig,
     sessions: Arc<SqliteSessionStore>,
     runtime: Arc<Runtime>,
+    pairing: Arc<PairingStore>,
 ) -> anyhow::Result<()> {
     // Validate that bind + auth combination is safe.
     validate_bind_auth(&config.gateway.bind, &config.gateway.auth)?;
@@ -38,7 +40,7 @@ pub async fn run(
     let rate_limiter = Arc::new(AuthRateLimiter::new(config.gateway.rate_limit.clone()));
     let bind_addr = resolve_bind_addr(&config.gateway.bind, config.gateway.port);
     let channels = Arc::new(frankclaw_channels::load_from_config(&config)?);
-    let state = GatewayState::new(config, sessions, runtime, channels);
+    let state = GatewayState::new(config, sessions, runtime, channels, pairing);
     start_channel_runtime(state.clone());
 
     let app = build_router(state.clone(), rate_limiter);
@@ -369,6 +371,44 @@ async fn process_inbound_message(
         return Ok(());
     }
 
+    if !inbound.is_group {
+        match dm_policy(&config, &inbound.channel) {
+            DmPolicy::Disabled => return Ok(()),
+            DmPolicy::Open => {}
+            DmPolicy::Allowlist => {
+                if !sender_allowed(&config, &state, &inbound) {
+                    return Ok(());
+                }
+            }
+            DmPolicy::Pairing => {
+                if !sender_allowed(&config, &state, &inbound) {
+                    let pending = state.pairing.ensure_pending(
+                        inbound.channel.as_str(),
+                        &inbound.account_id,
+                        &inbound.sender_id,
+                    )?;
+                    if let Some(channel) = state.channel(&inbound.channel) {
+                        let _ = channel
+                            .send(frankclaw_core::channel::OutboundMessage {
+                                channel: inbound.channel.clone(),
+                                account_id: inbound.account_id.clone(),
+                                to: inbound.sender_id.clone(),
+                                thread_id: inbound.thread_id.clone(),
+                                text: format!(
+                                    "Pairing required. Approve with: frankclaw pairing approve {} {}",
+                                    inbound.channel, pending.code
+                                ),
+                                attachments: Vec::new(),
+                                reply_to: inbound.platform_message_id.clone(),
+                            })
+                            .await;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let session_key = state.runtime.session_key_for_inbound(&inbound);
 
     let response = state
@@ -413,6 +453,58 @@ async fn process_inbound_message(
     }
 
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum DmPolicy {
+    Open,
+    Allowlist,
+    Pairing,
+    Disabled,
+}
+
+fn dm_policy(config: &FrankClawConfig, channel_id: &frankclaw_core::types::ChannelId) -> DmPolicy {
+    let Some(channel) = config.channels.get(channel_id) else {
+        return DmPolicy::Disabled;
+    };
+    let raw = channel
+        .extra
+        .get("dm_policy")
+        .and_then(|value| value.as_str())
+        .unwrap_or("pairing");
+
+    match raw {
+        "open" => DmPolicy::Open,
+        "allowlist" => DmPolicy::Allowlist,
+        "disabled" => DmPolicy::Disabled,
+        _ => DmPolicy::Pairing,
+    }
+}
+
+fn sender_allowed(
+    config: &FrankClawConfig,
+    state: &GatewayState,
+    inbound: &InboundMessage,
+) -> bool {
+    let explicit = config
+        .channels
+        .get(&inbound.channel)
+        .and_then(|channel| channel.extra.get("allow_from"))
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .map(|entry| entry == "*" || entry == inbound.sender_id)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    explicit
+        || state
+            .pairing
+            .is_approved(inbound.channel.as_str(), &inbound.account_id, &inbound.sender_id)
 }
 
 #[cfg(test)]

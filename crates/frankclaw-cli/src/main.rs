@@ -110,6 +110,25 @@ enum Command {
         session: String,
     },
 
+    /// List pending pairing requests.
+    PairingList {
+        /// Restrict to a specific channel.
+        channel: Option<String>,
+    },
+
+    /// Approve a pending pairing request by code.
+    PairingApprove {
+        /// Channel for the pending pairing request.
+        channel: String,
+
+        /// Pairing code.
+        code: String,
+
+        /// Restrict to a specific account.
+        #[arg(long)]
+        account: Option<String>,
+    },
+
     /// Initialize a new config file with secure defaults.
     Init {
         /// Force overwrite existing config.
@@ -160,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("failed to initialize runtime")?,
             );
+            let pairing = open_pairing_store(&state_dir)?;
 
             info!(
                 port = config.gateway.port,
@@ -167,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
                 "starting frankclaw gateway"
             );
 
-            frankclaw_gateway::server::run(config, sessions, runtime).await?;
+            frankclaw_gateway::server::run(config, sessions, runtime, pairing).await?;
         }
 
         Command::GenToken => {
@@ -315,6 +335,29 @@ async fn main() -> anyhow::Result<()> {
             println!("Session transcript cleared.");
         }
 
+        Command::PairingList { channel } => {
+            let store = open_pairing_store(&state_dir)?;
+            for pending in store.list_pending(channel.as_deref()) {
+                println!(
+                    "{}  channel={}  account={}  sender={}",
+                    pending.code, pending.channel, pending.account_id, pending.sender_id
+                );
+            }
+        }
+
+        Command::PairingApprove {
+            channel,
+            code,
+            account,
+        } => {
+            let store = open_pairing_store(&state_dir)?;
+            let approved = store.approve(Some(&channel), account.as_deref(), &code)?;
+            println!(
+                "Approved sender {} on {}/{}",
+                approved.sender_id, approved.channel, approved.account_id
+            );
+        }
+
         Command::Init { force } => {
             let config_path = cli
                 .config
@@ -400,6 +443,16 @@ fn open_sessions(
             load_master_key_from_env()?.as_ref(),
         )
             .context("failed to open session store")?,
+    ))
+}
+
+fn open_pairing_store(
+    state_dir: &std::path::Path,
+) -> anyhow::Result<std::sync::Arc<frankclaw_gateway::pairing::PairingStore>> {
+    let path = state_dir.join("pairings.json");
+    Ok(std::sync::Arc::new(
+        frankclaw_gateway::pairing::PairingStore::open(&path)
+            .context("failed to open pairing store")?,
     ))
 }
 

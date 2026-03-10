@@ -790,6 +790,7 @@ dependencies = [
  "frankclaw-runtime",
  "frankclaw-sessions",
  "futures-util",
+ "rand 0.8.5",
  "secrecy",
  "serde",
  "serde_json",

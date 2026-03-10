@@ -13,6 +13,7 @@ use frankclaw_runtime::Runtime;
 use frankclaw_sessions::SqliteSessionStore;
 
 use crate::broadcast::BroadcastHandle;
+use crate::pairing::PairingStore;
 
 /// Shared gateway state, wrapped in `Arc` for cheap cloning across tasks.
 ///
@@ -33,6 +34,9 @@ pub struct GatewayState {
 
     /// Loaded first-party channels.
     pub channels: Arc<ChannelSet>,
+
+    /// Local pairing approvals and pending requests.
+    pub pairing: Arc<PairingStore>,
 
     /// Monotonic connection counter.
     pub next_conn_id: std::sync::atomic::AtomicU64,
@@ -62,6 +66,7 @@ impl GatewayState {
         sessions: Arc<SqliteSessionStore>,
         runtime: Arc<Runtime>,
         channels: Arc<ChannelSet>,
+        pairing: Arc<PairingStore>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: ArcSwap::new(Arc::new(config)),
@@ -69,6 +74,7 @@ impl GatewayState {
             clients: DashMap::new(),
             runtime,
             channels,
+            pairing,
             next_conn_id: std::sync::atomic::AtomicU64::new(1),
             broadcast: BroadcastHandle::new(256),
             shutdown: CancellationToken::new(),
