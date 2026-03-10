@@ -112,8 +112,9 @@ impl FrankClawConfig {
             });
         }
 
-        for channel in self.channels.values() {
+        for (channel_id, channel) in &self.channels {
             channel.security_policy()?;
+            validate_channel_config(channel_id, channel)?;
         }
 
         Ok(())
@@ -366,6 +367,73 @@ impl ChannelConfig {
     }
 }
 
+fn validate_channel_config(channel_id: &ChannelId, channel: &ChannelConfig) -> Result<()> {
+    if !channel.enabled {
+        return Ok(());
+    }
+
+    match channel_id.as_str() {
+        "web" => Ok(()),
+        "telegram" => validate_channel_secret_source(
+            channel,
+            "telegram",
+            &["bot_token", "token"],
+            &["bot_token_env", "token_env"],
+        ),
+        "discord" => validate_channel_secret_source(
+            channel,
+            "discord",
+            &["bot_token", "token"],
+            &["bot_token_env", "token_env"],
+        ),
+        other => Err(FrankClawError::ConfigValidation {
+            msg: format!(
+                "unsupported enabled channel '{}'; currently supported: web, telegram, discord",
+                other
+            ),
+        }),
+    }
+}
+
+fn validate_channel_secret_source(
+    channel: &ChannelConfig,
+    channel_name: &str,
+    inline_keys: &[&str],
+    env_keys: &[&str],
+) -> Result<()> {
+    let account = channel.accounts.first().ok_or_else(|| FrankClawError::ConfigValidation {
+        msg: format!("{channel_name} channel requires at least one account"),
+    })?;
+
+    let has_inline_secret = inline_keys.iter().any(|key| {
+        account
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    });
+    if has_inline_secret {
+        return Ok(());
+    }
+
+    let has_env_secret = env_keys.iter().any(|key| {
+        account
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    });
+    if has_env_secret {
+        return Ok(());
+    }
+
+    Err(FrankClawError::ConfigValidation {
+        msg: format!(
+            "{channel_name} channel requires a non-empty bot token or bot token env reference"
+        ),
+    })
+}
+
 /// Model provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -585,5 +653,52 @@ mod tests {
         assert_eq!(policy.dm_policy, ChannelDmPolicy::Pairing);
         assert!(policy.require_mention_for_groups);
         assert!(policy.allow_from.is_empty());
+    }
+
+    #[test]
+    fn telegram_channel_requires_secret_source() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("telegram"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({})],
+                extra: serde_json::json!({}),
+            },
+        );
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn discord_channel_requires_secret_source() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("discord"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({})],
+                extra: serde_json::json!({}),
+            },
+        );
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn unsupported_enabled_channel_fails_validation() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("slack"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "bot_token": "test-token"
+                })],
+                extra: serde_json::json!({}),
+            },
+        );
+
+        assert!(config.validate().is_err());
     }
 }
