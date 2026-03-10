@@ -891,8 +891,64 @@ fn sender_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
     use axum::http::{HeaderMap, HeaderValue};
+    use frankclaw_core::config::{ChannelConfig, ProviderConfig};
+    use frankclaw_core::model::{
+        CompletionRequest, CompletionResponse, FinishReason, InputModality, ModelApi,
+        ModelCompat, ModelCost, ModelDef, ModelProvider,
+    };
+    use frankclaw_core::session::SessionStore;
+    use frankclaw_core::types::Role;
+    use frankclaw_sessions::SqliteSessionStore;
     use secrecy::ExposeSecret;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl ModelProvider for MockProvider {
+        fn id(&self) -> &str {
+            "mock"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+            _stream_tx: Option<tokio::sync::mpsc::Sender<frankclaw_core::model::StreamDelta>>,
+        ) -> frankclaw_core::error::Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: "mock reply".into(),
+                tool_calls: Vec::new(),
+                usage: frankclaw_core::model::Usage {
+                    input_tokens: 3,
+                    output_tokens: 2,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                finish_reason: FinishReason::Stop,
+            })
+        }
+
+        async fn list_models(&self) -> frankclaw_core::error::Result<Vec<ModelDef>> {
+            Ok(vec![ModelDef {
+                id: "mock-model".into(),
+                name: "mock-model".into(),
+                api: ModelApi::Ollama,
+                reasoning: false,
+                input: vec![InputModality::Text],
+                cost: ModelCost::default(),
+                context_window: 4096,
+                max_output_tokens: 1024,
+                compat: ModelCompat::default(),
+            }])
+        }
+
+        async fn health(&self) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn extracts_password_header_for_password_mode() {
@@ -928,5 +984,116 @@ mod tests {
             }
             _ => panic!("expected proxy identity"),
         }
+    }
+
+    #[tokio::test]
+    async fn web_inbound_roundtrip_persists_reply_and_metadata() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should exist");
+
+        let sessions = Arc::new(
+            SqliteSessionStore::open(&temp_dir.join("sessions.db"), None)
+                .expect("sessions should open"),
+        );
+        let pairing = Arc::new(
+            PairingStore::open(&temp_dir.join("pairings.json"))
+                .expect("pairings should open"),
+        );
+
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            frankclaw_core::types::ChannelId::new("web"),
+            ChannelConfig {
+                enabled: true,
+                accounts: Vec::new(),
+                extra: serde_json::json!({
+                    "dm_policy": "open"
+                }),
+            },
+        );
+        config.models.providers = vec![ProviderConfig {
+            id: "mock".into(),
+            api: "ollama".into(),
+            base_url: None,
+            api_key_ref: None,
+            models: vec!["mock-model".into()],
+            cooldown_secs: 1,
+        }];
+
+        let runtime = Arc::new(
+            Runtime::from_providers(
+                &config,
+                sessions.clone() as Arc<dyn SessionStore>,
+                vec![Arc::new(MockProvider)],
+            )
+            .await
+            .expect("runtime should build"),
+        );
+        let channels = Arc::new(
+            frankclaw_channels::load_from_config(&config).expect("channels should load"),
+        );
+        let state = GatewayState::new(config, sessions.clone(), runtime, channels, pairing);
+
+        let inbound = InboundMessage {
+            channel: frankclaw_core::types::ChannelId::new("web"),
+            account_id: "default".into(),
+            sender_id: "user-1".into(),
+            sender_name: Some("User".into()),
+            thread_id: None,
+            is_group: false,
+            is_mention: false,
+            text: Some("hello".into()),
+            attachments: Vec::new(),
+            platform_message_id: Some("incoming-1".into()),
+            timestamp: chrono::Utc::now(),
+        };
+        let session_key = state.runtime.session_key_for_inbound(&inbound);
+
+        process_inbound_message(state.clone(), inbound)
+            .await
+            .expect("inbound processing should succeed");
+
+        let outbound = state
+            .web_channel()
+            .expect("web channel should exist")
+            .drain_outbound()
+            .await;
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].text, "mock reply");
+
+        let transcript = sessions
+            .get_transcript(&session_key, 10, None)
+            .await
+            .expect("transcript should load");
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0].role, Role::User);
+        assert_eq!(transcript[1].role, Role::Assistant);
+        assert_eq!(transcript[1].content, "mock reply");
+
+        let session = sessions
+            .get(&session_key)
+            .await
+            .expect("session lookup should work")
+            .expect("session should exist");
+        assert_eq!(
+            session.metadata["delivery"]["last_reply"]["status"],
+            serde_json::json!("sent")
+        );
+        assert!(
+            session.metadata["delivery"]["last_reply"]["platform_message_id"]
+                .as_str()
+                .is_some()
+        );
+        assert_eq!(
+            session.metadata["delivery"]["last_reply"]["content"],
+            serde_json::json!("mock reply")
+        );
+
+        let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
+        let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

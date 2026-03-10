@@ -30,3 +30,4 @@ secrecy = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 rand = { workspace = true }
+async-trait = { workspace = true }

@@ -9,7 +9,9 @@ use secrecy::SecretString;
 use frankclaw_core::config::{AgentDef, FrankClawConfig, ProviderConfig};
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::channel::InboundMessage;
-use frankclaw_core::model::{CompletionMessage, CompletionRequest, ModelDef, Usage};
+use frankclaw_core::model::{
+    CompletionMessage, CompletionRequest, ModelDef, ModelProvider, Usage,
+};
 use frankclaw_core::session::{SessionEntry, SessionStore, TranscriptEntry};
 use frankclaw_core::types::{AgentId, ChannelId, Role, SessionKey};
 use frankclaw_models::{
@@ -48,6 +50,14 @@ impl Runtime {
         sessions: Arc<dyn SessionStore>,
     ) -> Result<Self> {
         let providers = build_providers(config)?;
+        Self::from_providers(config, sessions, providers).await
+    }
+
+    pub async fn from_providers(
+        config: &FrankClawConfig,
+        sessions: Arc<dyn SessionStore>,
+        providers: Vec<Arc<dyn ModelProvider>>,
+    ) -> Result<Self> {
         let cooldown_secs = config
             .models
             .providers
@@ -352,4 +362,137 @@ fn resolve_secret(provider: &ProviderConfig, default_env: &str) -> Result<Secret
     }
 
     Ok(SecretString::from(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use frankclaw_core::model::{
+        CompletionResponse, FinishReason, InputModality, ModelApi, ModelCompat, ModelCost,
+    };
+    use frankclaw_core::session::SessionStore;
+    use frankclaw_sessions::SqliteSessionStore;
+
+    struct MockProvider {
+        id: String,
+        model_id: String,
+        response: Option<String>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for MockProvider {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+            _stream_tx: Option<tokio::sync::mpsc::Sender<frankclaw_core::model::StreamDelta>>,
+        ) -> Result<CompletionResponse> {
+            match &self.response {
+                Some(content) => Ok(CompletionResponse {
+                    content: content.clone(),
+                    tool_calls: Vec::new(),
+                    usage: Usage {
+                        input_tokens: 4,
+                        output_tokens: 2,
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                    },
+                    finish_reason: FinishReason::Stop,
+                }),
+                None => Err(FrankClawError::AllProvidersFailed),
+            }
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelDef>> {
+            Ok(vec![ModelDef {
+                id: self.model_id.clone(),
+                name: self.model_id.clone(),
+                api: ModelApi::Ollama,
+                reasoning: false,
+                input: vec![InputModality::Text],
+                cost: ModelCost::default(),
+                context_window: 8192,
+                max_output_tokens: 1024,
+                compat: ModelCompat::default(),
+            }])
+        }
+
+        async fn health(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_fails_over_to_next_provider_and_persists_history() {
+        let temp = std::env::temp_dir().join(format!(
+            "frankclaw-runtime-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let sessions = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
+        let mut config = FrankClawConfig::default();
+        config.models.providers = vec![
+            ProviderConfig {
+                id: "primary".into(),
+                api: "ollama".into(),
+                base_url: None,
+                api_key_ref: None,
+                models: vec!["mock-primary".into()],
+                cooldown_secs: 1,
+            },
+            ProviderConfig {
+                id: "secondary".into(),
+                api: "ollama".into(),
+                base_url: None,
+                api_key_ref: None,
+                models: vec!["mock-secondary".into()],
+                cooldown_secs: 1,
+            },
+        ];
+
+        let runtime = Runtime::from_providers(
+            &config,
+            sessions.clone() as Arc<dyn SessionStore>,
+            vec![
+                Arc::new(MockProvider {
+                    id: "primary".into(),
+                    model_id: "mock-primary".into(),
+                    response: None,
+                }),
+                Arc::new(MockProvider {
+                    id: "secondary".into(),
+                    model_id: "mock-secondary".into(),
+                    response: Some("fallback reply".into()),
+                }),
+            ],
+        )
+        .await
+        .expect("runtime should build");
+
+        let response = runtime
+            .chat(ChatRequest {
+                agent_id: None,
+                session_key: None,
+                message: "hello".into(),
+                model_id: Some("mock-secondary".into()),
+                max_tokens: None,
+                temperature: None,
+            })
+            .await
+            .expect("chat should succeed");
+
+        assert_eq!(response.content, "fallback reply");
+        let transcript = sessions
+            .get_transcript(&response.session_key, 10, None)
+            .await
+            .expect("transcript should load");
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0].role, Role::User);
+        assert_eq!(transcript[1].role, Role::Assistant);
+
+        let _ = std::fs::remove_file(temp);
+    }
 }

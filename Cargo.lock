@@ -780,6 +780,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "axum",
  "axum-extra",
  "chrono",
@@ -877,6 +878,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
