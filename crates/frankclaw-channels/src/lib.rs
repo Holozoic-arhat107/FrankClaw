@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod discord;
 pub mod telegram;
 pub mod web;
 
@@ -83,9 +84,26 @@ fn build_channel(channel_id: &ChannelId, channel_config: &ChannelConfig) -> Resu
                 telegram::TelegramChannel::new(bot_token),
             )))
         }
+        "discord" => {
+            let account = channel_config.accounts.first().ok_or_else(|| {
+                FrankClawError::ConfigValidation {
+                    msg: "discord channel requires at least one account".into(),
+                }
+            })?;
+            let bot_token = resolve_channel_secret(
+                account,
+                &["bot_token", "token"],
+                &["bot_token_env", "token_env"],
+                "DISCORD_BOT_TOKEN",
+                "discord",
+            )?;
+            Ok(LoadedChannel::Standard(Arc::new(
+                discord::DiscordChannel::new(bot_token),
+            )))
+        }
         other => Err(FrankClawError::ConfigValidation {
             msg: format!(
-                "unsupported enabled channel '{}'; currently supported: web, telegram",
+                "unsupported enabled channel '{}'; currently supported: web, telegram, discord",
                 other
             ),
         }),
@@ -183,5 +201,26 @@ mod tests {
             .get(&ChannelId::new("telegram"))
             .expect("telegram channel should exist");
         assert_eq!(channel.label(), "Telegram");
+    }
+
+    #[test]
+    fn load_from_config_builds_discord_from_inline_token() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("discord"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "bot_token": "test-token"
+                })],
+                extra: serde_json::json!({}),
+            },
+        );
+
+        let channels = load_from_config(&config).expect("channels should load");
+        let channel = channels
+            .get(&ChannelId::new("discord"))
+            .expect("discord channel should exist");
+        assert_eq!(channel.label(), "Discord");
     }
 }
