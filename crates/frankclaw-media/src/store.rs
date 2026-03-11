@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use frankclaw_core::error::{FrankClawError, Result};
-use frankclaw_core::media::MediaFile;
+use frankclaw_core::media::{MediaFile, mime_for_safe_extension, safe_extension_for_mime};
 use frankclaw_core::types::MediaId;
 
 /// File-based media store with TTL cleanup.
@@ -65,7 +65,7 @@ impl MediaStore {
         }
 
         let id = MediaId::new();
-        let ext = mime_to_safe_extension(mime_type);
+        let ext = safe_extension_for_mime(mime_type);
         let filename = format!("{id}.{ext}");
         let path = self.base_dir.join(&filename);
         let metadata_path = metadata_path_for(&path);
@@ -166,7 +166,7 @@ impl MediaStore {
             .unwrap_or_else(|| {
                 path.extension()
                     .and_then(|value| value.to_str())
-                    .map(mime_from_safe_extension)
+                    .map(mime_for_safe_extension)
                     .unwrap_or("application/octet-stream")
                     .to_string()
             });
@@ -237,48 +237,6 @@ fn read_metadata(path: &std::path::Path) -> Result<Option<MediaMetadata>> {
     Ok(Some(metadata))
 }
 
-/// Map MIME type to a safe file extension.
-/// Prevents storing executable extensions that could be accidentally run.
-fn mime_to_safe_extension(mime: &str) -> &str {
-    match mime {
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/svg+xml" => "svg",
-        "audio/mpeg" => "mp3",
-        "audio/ogg" => "ogg",
-        "audio/wav" => "wav",
-        "audio/webm" => "weba",
-        "video/mp4" => "mp4",
-        "video/webm" => "webm",
-        "application/pdf" => "pdf",
-        "text/plain" => "txt",
-        "application/json" => "json",
-        _ => "bin", // Safe default — never .exe, .sh, .bat, etc.
-    }
-}
-
-fn mime_from_safe_extension(ext: &str) -> &str {
-    match ext {
-        "jpg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        "wav" => "audio/wav",
-        "weba" => "audio/webm",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "pdf" => "application/pdf",
-        "txt" => "text/plain; charset=utf-8",
-        "json" => "application/json",
-        _ => "application/octet-stream",
-    }
-}
-
 /// Sanitize filename to prevent path traversal.
 /// Strips directory separators, leading dots, and limits length.
 fn sanitize_filename(name: &str) -> String {
@@ -307,9 +265,10 @@ mod tests {
 
     #[test]
     fn safe_extensions() {
-        assert_eq!(mime_to_safe_extension("application/x-executable"), "bin");
-        assert_eq!(mime_to_safe_extension("application/x-sh"), "bin");
-        assert_eq!(mime_to_safe_extension("image/png"), "png");
+        assert_eq!(safe_extension_for_mime("application/x-executable"), "bin");
+        assert_eq!(safe_extension_for_mime("application/x-sh"), "bin");
+        assert_eq!(safe_extension_for_mime("image/png"), "png");
+        assert_eq!(safe_extension_for_mime("audio/mp4"), "m4a");
     }
 
     #[test]

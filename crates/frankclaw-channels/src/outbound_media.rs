@@ -1,5 +1,6 @@
 use frankclaw_core::channel::OutboundAttachment;
 use frankclaw_core::error::{FrankClawError, Result};
+use frankclaw_core::media::safe_extension_for_mime;
 use frankclaw_core::types::ChannelId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +67,7 @@ pub(crate) fn attachment_bytes(
 }
 
 fn default_filename(mime_type: &str) -> String {
-    let ext = match attachment_kind(mime_type) {
-        AttachmentKind::Image => "png",
-        AttachmentKind::Audio => "ogg",
-        AttachmentKind::Video => "mp4",
-        AttachmentKind::Document => "bin",
-    };
+    let ext = safe_extension_for_mime(mime_type);
     format!("attachment.{ext}")
 }
 
@@ -95,12 +91,12 @@ mod tests {
     fn infers_default_filename_from_media_kind() {
         let attachment = OutboundAttachment {
             media_id: MediaId::new(),
-            mime_type: "audio/ogg".into(),
+            mime_type: "audio/mp4".into(),
             filename: None,
             url: None,
             bytes: b"voice".to_vec(),
         };
 
-        assert_eq!(attachment_filename(&attachment), "attachment.ogg");
+        assert_eq!(attachment_filename(&attachment), "attachment.m4a");
     }
 }

@@ -16,6 +16,76 @@ pub struct MediaFile {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Map a MIME type to a safe file extension.
+pub fn safe_extension_for_mime(mime: &str) -> &'static str {
+    match normalize_mime(mime) {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "audio/ogg" => "ogg",
+        "audio/wav" => "wav",
+        "audio/webm" => "weba",
+        "audio/flac" => "flac",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "application/pdf" => "pdf",
+        "application/json" => "json",
+        "application/zip" => "zip",
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "text/markdown" => "md",
+        _ => "bin",
+    }
+}
+
+/// Map a safe extension back to a MIME type.
+pub fn mime_for_safe_extension(ext: &str) -> &'static str {
+    match ext.trim().to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "wav" => "audio/wav",
+        "weba" => "audio/webm",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "zip" => "application/zip",
+        "txt" => "text/plain; charset=utf-8",
+        "csv" => "text/csv",
+        "md" => "text/markdown",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Infer a MIME type from a filename or URL path segment.
+pub fn infer_mime_from_name(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    let ext = name.rsplit('.').next()?.trim();
+    let mime = mime_for_safe_extension(ext);
+    if mime == "application/octet-stream" {
+        None
+    } else {
+        Some(mime)
+    }
+}
+
+fn normalize_mime(mime: &str) -> &str {
+    mime.split(';').next().unwrap_or(mime).trim()
+}
+
 /// SSRF protection: check if an IP address is safe to connect to.
 ///
 /// Blocks all private, reserved, loopback, link-local, and multicast ranges.
@@ -108,5 +178,19 @@ mod tests {
         assert!(!is_safe_ip(&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
         assert!(!is_safe_ip(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
         assert!(!is_safe_ip(&IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))));
+    }
+
+    #[test]
+    fn safe_extension_handles_additional_media_types() {
+        assert_eq!(safe_extension_for_mime("audio/mp4"), "m4a");
+        assert_eq!(safe_extension_for_mime("video/quicktime"), "mov");
+        assert_eq!(safe_extension_for_mime("text/markdown"), "md");
+    }
+
+    #[test]
+    fn infer_mime_from_name_recognizes_common_extensions() {
+        assert_eq!(infer_mime_from_name("voice-note.m4a"), Some("audio/mp4"));
+        assert_eq!(infer_mime_from_name("report.csv"), Some("text/csv"));
+        assert_eq!(infer_mime_from_name("unknown.blob"), None);
     }
 }

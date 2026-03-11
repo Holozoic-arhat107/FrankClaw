@@ -1,3 +1,5 @@
+use frankclaw_core::media::infer_mime_from_name;
+
 pub(crate) fn infer_inbound_mime_type(
     explicit: Option<&str>,
     filename: Option<&str>,
@@ -10,15 +12,11 @@ pub(crate) fn infer_inbound_mime_type(
         return explicit.to_string();
     }
 
-    infer_from_name(filename)
+    filename
+        .and_then(infer_mime_from_name)
+        .map(str::to_string)
         .or_else(|| infer_from_url(url))
         .unwrap_or_else(|| "application/octet-stream".to_string())
-}
-
-fn infer_from_name(name: Option<&str>) -> Option<String> {
-    let name = name?.trim();
-    let ext = name.rsplit('.').next()?.trim().to_ascii_lowercase();
-    infer_from_extension(&ext).map(str::to_string)
 }
 
 fn infer_from_url(url: Option<&str>) -> Option<String> {
@@ -30,32 +28,7 @@ fn infer_from_url(url: Option<&str>) -> Option<String> {
         .rsplit('/')
         .next()
         .unwrap_or(url);
-    infer_from_name(Some(path))
-}
-
-fn infer_from_extension(ext: &str) -> Option<&'static str> {
-    match ext {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "svg" => Some("image/svg+xml"),
-        "mp3" => Some("audio/mpeg"),
-        "m4a" => Some("audio/mp4"),
-        "ogg" | "oga" => Some("audio/ogg"),
-        "wav" => Some("audio/wav"),
-        "flac" => Some("audio/flac"),
-        "mp4" => Some("video/mp4"),
-        "mov" => Some("video/quicktime"),
-        "webm" => Some("video/webm"),
-        "pdf" => Some("application/pdf"),
-        "json" => Some("application/json"),
-        "csv" => Some("text/csv"),
-        "md" => Some("text/markdown"),
-        "txt" | "log" => Some("text/plain"),
-        "zip" => Some("application/zip"),
-        _ => None,
-    }
+    infer_mime_from_name(path).map(str::to_string)
 }
 
 #[cfg(test)]
