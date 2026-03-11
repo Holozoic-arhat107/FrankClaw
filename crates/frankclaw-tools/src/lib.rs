@@ -58,6 +58,7 @@ impl ToolRegistry {
         registry.register(Arc::new(BrowserClickTool::new(browser.clone())));
         registry.register(Arc::new(BrowserTypeTool::new(browser.clone())));
         registry.register(Arc::new(BrowserWaitTool::new(browser.clone())));
+        registry.register(Arc::new(BrowserPressTool::new(browser.clone())));
         registry.register(Arc::new(BrowserSessionsTool::new(browser.clone())));
         registry.register(Arc::new(BrowserCloseTool::new(browser)));
         registry
@@ -378,6 +379,30 @@ impl BrowserClient {
         }
     }
 
+    async fn press_key(&self, session_id: &str, selector: &str, key: &str) -> Result<BrowserSnapshot> {
+        validate_press_key(key)?;
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: format!("browser session '{}' was not opened yet", session_id),
+            })?;
+        let mut socket = self.connect_page_socket(&session.page_ws_url).await?;
+        self.wait_for_ready(&mut socket).await?;
+        let pressed = self
+            .evaluate_bool(&mut socket, &press_expression(selector, key))
+            .await?;
+        if !pressed {
+            return Err(FrankClawError::AgentRuntime {
+                msg: format!("browser.press could not find selector '{}'", selector),
+            });
+        }
+        self.snapshot_session(&session).await
+    }
+
     async fn create_target(&self, url: &str) -> Result<DevtoolsTarget> {
         let mut endpoint = self.base_url.join("json/new").map_err(|err| FrankClawError::Internal {
             msg: format!("invalid browser endpoint: {err}"),
@@ -586,6 +611,9 @@ struct BrowserTypeTool {
 struct BrowserWaitTool {
     client: Arc<BrowserClient>,
 }
+struct BrowserPressTool {
+    client: Arc<BrowserClient>,
+}
 struct BrowserSessionsTool {
     client: Arc<BrowserClient>,
 }
@@ -624,6 +652,12 @@ impl BrowserTypeTool {
 }
 
 impl BrowserWaitTool {
+    fn new(client: Arc<BrowserClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl BrowserPressTool {
     fn new(client: Arc<BrowserClient>) -> Self {
         Self { client }
     }
@@ -904,6 +938,49 @@ impl Tool for BrowserWaitTool {
 }
 
 #[async_trait]
+impl Tool for BrowserPressTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "browser.press".into(),
+            description: "Send one allowed keyboard key to a focused DOM element by CSS selector in an existing Chromium-backed browser session.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["selector", "key"],
+                "properties": {
+                    "session_id": { "type": "string", "description": "Optional browser session identifier. Defaults to the current chat session." },
+                    "selector": { "type": "string", "description": "CSS selector for the target element." },
+                    "key": { "type": "string", "description": "Allowed key: Enter, Tab, Escape, ArrowDown, ArrowUp." }
+                }
+            }),
+        }
+    }
+
+    async fn invoke(&self, args: serde_json::Value, ctx: ToolContext) -> Result<serde_json::Value> {
+        let session_id = self
+            .client
+            .resolve_session_id(args.get("session_id").and_then(|value| value.as_str()), &ctx)?;
+        let selector = args
+            .get("selector")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: "browser.press requires a non-empty selector".into(),
+            })?;
+        let key = args
+            .get("key")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: "browser.press requires an allowed key".into(),
+            })?;
+        let snapshot = self.client.press_key(&session_id, selector, key).await?;
+        Ok(snapshot_result(snapshot, false, 1000))
+    }
+}
+
+#[async_trait]
 impl Tool for BrowserSessionsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
@@ -1001,6 +1078,26 @@ fn wait_expression(selector: Option<&str>, text: Option<&str>) -> String {
     format!(
         "(function() {{ const selector = {selector}; const text = {text}; const hasSelector = !selector || !!document.querySelector(selector); const bodyText = document.body ? document.body.innerText : ''; const hasText = !text || bodyText.includes(text); return hasSelector && hasText; }})()"
     )
+}
+
+fn press_expression(selector: &str, key: &str) -> String {
+    let selector = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".into());
+    let key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "(function() {{ const el = document.querySelector({selector}); if (!el) return false; el.focus(); for (const type of ['keydown', 'keypress', 'keyup']) {{ el.dispatchEvent(new KeyboardEvent(type, {{ key: {key}, bubbles: true }})); }} return true; }})()"
+    )
+}
+
+fn validate_press_key(key: &str) -> Result<()> {
+    match key {
+        "Enter" | "Tab" | "Escape" | "ArrowDown" | "ArrowUp" => Ok(()),
+        _ => Err(FrankClawError::InvalidRequest {
+            msg: format!(
+                "browser.press only allows Enter, Tab, Escape, ArrowDown, and ArrowUp; got '{}'",
+                key
+            ),
+        }),
+    }
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -1222,6 +1319,7 @@ mod tests {
         registry.register(Arc::new(BrowserClickTool::new(client.clone())));
         registry.register(Arc::new(BrowserTypeTool::new(client.clone())));
         registry.register(Arc::new(BrowserWaitTool::new(client.clone())));
+        registry.register(Arc::new(BrowserPressTool::new(client.clone())));
         registry.register(Arc::new(BrowserSessionsTool::new(client.clone())));
         registry.register(Arc::new(BrowserCloseTool::new(client)));
 
@@ -1237,6 +1335,7 @@ mod tests {
             "browser.click".into(),
             "browser.type".into(),
             "browser.wait".into(),
+            "browser.press".into(),
             "browser.sessions".into(),
             "browser.close".into(),
         ];
@@ -1327,6 +1426,26 @@ mod tests {
             .expect("browser.wait should succeed");
         assert_eq!(waited.output["title"], serde_json::json!("Typed"));
 
+        let pressed = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.press",
+                serde_json::json!({ "selector": "#query", "key": "Enter" }),
+                ToolContext {
+                    agent_id: AgentId::default_agent(),
+                    session_key: Some(SessionKey::from_raw("default:web:browser")),
+                    sessions: Arc::new(MockSessionStore::default()),
+                },
+            )
+            .await
+            .expect("browser.press should succeed");
+        assert!(
+            pressed.output["text"]
+                .as_str()
+                .expect("text should exist")
+                .contains("Pressed Enter")
+        );
+
         let sessions = registry
             .invoke_allowed(
                 &allowed,
@@ -1408,6 +1527,12 @@ mod tests {
                             document.title = "Typed";
                             status.textContent = "Typed " + query.value;
                           });
+                          query.addEventListener("keydown", (event) => {
+                            if (event.key === "Enter") {
+                              document.title = "Pressed";
+                              status.textContent = "Pressed " + event.key + " " + query.value;
+                            }
+                          });
                           document.getElementById("submit").addEventListener("click", () => {
                             document.title = "Clicked";
                             status.textContent = "Clicked " + query.value;
@@ -1439,6 +1564,7 @@ mod tests {
             "browser.click".into(),
             "browser.type".into(),
             "browser.wait".into(),
+            "browser.press".into(),
             "browser.sessions".into(),
             "browser.close".into(),
         ];
@@ -1485,6 +1611,23 @@ mod tests {
                 .as_str()
                 .expect("text should exist")
                 .contains("Typed frankclaw")
+        );
+
+        let pressed = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.press",
+                serde_json::json!({ "selector": "#query", "key": "Enter" }),
+                ctx.clone(),
+            )
+            .await
+            .expect("browser.press should succeed against real chromium");
+        assert_eq!(pressed.output["title"], serde_json::json!("Pressed"));
+        assert!(
+            pressed.output["text"]
+                .as_str()
+                .expect("text should exist")
+                .contains("Pressed Enter frankclaw")
         );
 
         let clicked = registry
@@ -1621,6 +1764,11 @@ mod tests {
                                 .unwrap_or_default();
                             *state.title.lock().await = "Typed".into();
                             *state.text.lock().await = format!("Typed {typed}");
+                            serde_json::json!(true)
+                        }
+                        expression if expression.contains("new KeyboardEvent") => {
+                            *state.title.lock().await = "Pressed".into();
+                            *state.text.lock().await = "Pressed Enter".into();
                             serde_json::json!(true)
                         }
                         expression if expression.contains("const selector = ") => {
