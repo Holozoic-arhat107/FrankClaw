@@ -304,6 +304,7 @@ pub enum ChannelDmPolicy {
 pub struct ChannelSecurityPolicy {
     pub dm_policy: ChannelDmPolicy,
     pub allow_from: Vec<String>,
+    pub allowed_groups: Option<Vec<String>>,
     pub require_mention_for_groups: bool,
     pub max_message_bytes: Option<usize>,
 }
@@ -313,6 +314,7 @@ impl Default for ChannelSecurityPolicy {
         Self {
             dm_policy: ChannelDmPolicy::Pairing,
             allow_from: Vec::new(),
+            allowed_groups: None,
             require_mention_for_groups: true,
             max_message_bytes: None,
         }
@@ -354,6 +356,24 @@ impl ChannelConfig {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+        }
+
+        if let Some(raw) = self.extra.get("groups") {
+            let entries = raw.as_array().ok_or_else(|| FrankClawError::ConfigValidation {
+                msg: "groups must be an array of group or thread ids".into(),
+            })?;
+            policy.allowed_groups = Some(
+                entries
+                    .iter()
+                    .map(|entry| {
+                        entry.as_str().map(str::to_string).ok_or_else(|| {
+                            FrankClawError::ConfigValidation {
+                                msg: "groups entries must be strings".into(),
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            );
         }
 
         if let Some(raw) = self
@@ -797,6 +817,45 @@ mod tests {
         assert_eq!(policy.dm_policy, ChannelDmPolicy::Pairing);
         assert!(policy.require_mention_for_groups);
         assert!(policy.allow_from.is_empty());
+        assert!(policy.allowed_groups.is_none());
+    }
+
+    #[test]
+    fn channel_security_policy_parses_group_allowlist() {
+        let policy = ChannelConfig {
+            enabled: true,
+            accounts: Vec::new(),
+            extra: serde_json::json!({
+                "groups": ["group:family", "*"]
+            }),
+        }
+        .security_policy()
+        .expect("policy should parse");
+
+        assert_eq!(
+            policy.allowed_groups,
+            Some(vec!["group:family".into(), "*".into()])
+        );
+    }
+
+    #[test]
+    fn invalid_group_allowlist_fails_validation() {
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("signal"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "base_url": "http://127.0.0.1:8080",
+                    "account": "+15551234567"
+                })],
+                extra: serde_json::json!({
+                    "groups": [42]
+                }),
+            },
+        );
+
+        assert!(config.validate().is_err());
     }
 
     #[test]

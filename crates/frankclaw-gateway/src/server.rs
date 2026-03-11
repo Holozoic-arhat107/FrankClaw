@@ -817,6 +817,10 @@ async fn process_inbound_message(
         return Ok(());
     }
 
+    if inbound.is_group && !group_allowed(&policy, &inbound) {
+        return Ok(());
+    }
+
     if !inbound.is_group {
         match policy.dm_policy {
             ChannelDmPolicy::Disabled => return Ok(()),
@@ -1140,6 +1144,25 @@ fn sender_allowed(
             .is_approved(inbound.channel.as_str(), &inbound.account_id, &inbound.sender_id)
 }
 
+fn group_allowed(
+    policy: &frankclaw_core::config::ChannelSecurityPolicy,
+    inbound: &InboundMessage,
+) -> bool {
+    let Some(allowed_groups) = policy.allowed_groups.as_ref() else {
+        return true;
+    };
+
+    if allowed_groups.iter().any(|entry| entry == "*") {
+        return true;
+    }
+
+    inbound
+        .thread_id
+        .as_deref()
+        .map(|thread_id| allowed_groups.iter().any(|entry| entry == thread_id))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1163,6 +1186,41 @@ mod tests {
     use frankclaw_sessions::SqliteSessionStore;
     use secrecy::ExposeSecret;
     use tower::ServiceExt;
+
+    #[test]
+    fn group_allowlist_matches_explicit_thread_or_wildcard() {
+        let explicit_policy = frankclaw_core::config::ChannelSecurityPolicy {
+            allowed_groups: Some(vec!["group:family".into()]),
+            ..Default::default()
+        };
+        let wildcard_policy = frankclaw_core::config::ChannelSecurityPolicy {
+            allowed_groups: Some(vec!["*".into()]),
+            ..Default::default()
+        };
+        let inbound = InboundMessage {
+            channel: frankclaw_core::types::ChannelId::new("signal"),
+            account_id: "default".into(),
+            sender_id: "+15550001111".into(),
+            sender_name: None,
+            thread_id: Some("group:family".into()),
+            is_group: true,
+            is_mention: true,
+            text: Some("hello".into()),
+            attachments: Vec::new(),
+            platform_message_id: Some("msg-1".into()),
+            timestamp: chrono::Utc::now(),
+        };
+
+        assert!(group_allowed(&explicit_policy, &inbound));
+        assert!(group_allowed(&wildcard_policy, &inbound));
+        assert!(!group_allowed(
+            &frankclaw_core::config::ChannelSecurityPolicy {
+                allowed_groups: Some(vec!["group:other".into()]),
+                ..Default::default()
+            },
+            &inbound,
+        ));
+    }
 
     struct MockProvider;
     struct CaptureChannel {
@@ -1532,6 +1590,73 @@ mod tests {
         assert_eq!(
             session.metadata["delivery"]["last_reply"]["content"],
             serde_json::json!("mock reply")
+        );
+
+        let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
+        let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn discord_inbound_roundtrip_ignores_unlisted_group_thread() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-discord-group-filter-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            frankclaw_core::types::ChannelId::new("discord"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "bot_token": "test-token"
+                })],
+                extra: serde_json::json!({
+                    "dm_policy": "open",
+                    "require_mention_for_groups": true,
+                    "groups": ["channel-allowed"]
+                }),
+            },
+        );
+
+        let capture = Arc::new(CaptureChannel::new("discord", "Discord"));
+        let mut map: HashMap<
+            frankclaw_core::types::ChannelId,
+            Arc<dyn frankclaw_core::channel::ChannelPlugin>,
+        > = HashMap::new();
+        map.insert(
+            frankclaw_core::types::ChannelId::new("discord"),
+            capture.clone() as Arc<dyn frankclaw_core::channel::ChannelPlugin>,
+        );
+        let channels = Arc::new(ChannelSet::from_parts(map, None, None));
+        let (state, sessions) = build_test_state(&temp_dir, config, channels).await;
+
+        let inbound = InboundMessage {
+            channel: frankclaw_core::types::ChannelId::new("discord"),
+            account_id: "default".into(),
+            sender_id: "user-1".into(),
+            sender_name: Some("User".into()),
+            thread_id: Some("channel-blocked".into()),
+            is_group: true,
+            is_mention: true,
+            text: Some("<@bot> hello".into()),
+            attachments: Vec::new(),
+            platform_message_id: Some("discord-msg-1".into()),
+            timestamp: chrono::Utc::now(),
+        };
+        let session_key = state.runtime.session_key_for_inbound(&inbound);
+
+        process_inbound_message(state.clone(), inbound)
+            .await
+            .expect("inbound processing should succeed");
+
+        assert!(capture.drain().await.is_empty());
+        assert!(
+            sessions
+                .get(&session_key)
+                .await
+                .expect("session lookup should work")
+                .is_none()
         );
 
         let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
