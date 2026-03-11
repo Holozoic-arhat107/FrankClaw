@@ -204,7 +204,7 @@ impl ChannelPlugin for DiscordChannel {
             threads: true,
             groups: true,
             attachments: true,
-            edit: false,
+            edit: true,
             delete: false,
             reactions: false,
             streaming: false,
@@ -295,6 +295,40 @@ impl ChannelPlugin for DiscordChannel {
                 reason: body["message"]
                     .as_str()
                     .unwrap_or("unknown discord send failure")
+                    .to_string(),
+            })
+        }
+    }
+
+    async fn edit_message(&self, target: &EditMessageTarget, new_text: &str) -> Result<()> {
+        let (channel_id, body) = build_edit_request(target, new_text);
+        let resp = self
+            .client
+            .patch(format!(
+                "{DISCORD_API_BASE}/channels/{channel_id}/messages/{}",
+                target.platform_message_id
+            ))
+            .header("authorization", self.auth_header())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("discord edit failed: {e}"),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("invalid discord edit response: {e}"),
+            })?;
+            Err(FrankClawError::Channel {
+                channel: self.id(),
+                msg: body["message"]
+                    .as_str()
+                    .unwrap_or("unknown discord edit failure")
                     .to_string(),
             })
         }
@@ -425,6 +459,13 @@ fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
     body
 }
 
+fn build_edit_request(target: &EditMessageTarget, new_text: &str) -> (String, serde_json::Value) {
+    (
+        target.thread_id.clone().unwrap_or_else(|| target.to.clone()),
+        serde_json::json!({ "content": new_text }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +548,22 @@ mod tests {
             serde_json::json!("msg-99")
         );
         assert_eq!(body["allowed_mentions"]["parse"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn build_edit_request_prefers_thread_target() {
+        let (channel_id, body) = build_edit_request(
+            &EditMessageTarget {
+                account_id: "default".into(),
+                to: "chan-1".into(),
+                thread_id: Some("thread-9".into()),
+                platform_message_id: "msg-99".into(),
+            },
+            "updated",
+        );
+
+        assert_eq!(channel_id, "thread-9");
+        assert_eq!(body["content"], serde_json::json!("updated"));
     }
 
     #[test]

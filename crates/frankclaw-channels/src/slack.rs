@@ -174,7 +174,7 @@ impl ChannelPlugin for SlackChannel {
             threads: true,
             groups: true,
             attachments: true,
-            edit: false,
+            edit: true,
             delete: false,
             reactions: false,
             streaming: false,
@@ -263,6 +263,36 @@ impl ChannelPlugin for SlackChannel {
                 reason: body["error"]
                     .as_str()
                     .unwrap_or("unknown slack send failure")
+                    .to_string(),
+            })
+        }
+    }
+
+    async fn edit_message(&self, target: &EditMessageTarget, new_text: &str) -> Result<()> {
+        let resp = self
+            .client
+            .post(format!("{SLACK_API_BASE}/chat.update"))
+            .header("authorization", self.bot_auth_header())
+            .json(&build_edit_body(target, new_text))
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("slack edit failed: {e}"),
+            })?;
+
+        let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("invalid slack edit response: {e}"),
+        })?;
+        if body["ok"].as_bool() == Some(true) {
+            Ok(())
+        } else {
+            Err(FrankClawError::Channel {
+                channel: self.id(),
+                msg: body["error"]
+                    .as_str()
+                    .unwrap_or("unknown slack edit failure")
                     .to_string(),
             })
         }
@@ -367,6 +397,15 @@ fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
         body["thread_ts"] = serde_json::json!(thread_ts);
     }
     body
+}
+
+fn build_edit_body(target: &EditMessageTarget, new_text: &str) -> serde_json::Value {
+    let (channel, _) = parse_thread_target(target.thread_id.as_deref(), &target.to);
+    serde_json::json!({
+        "channel": channel,
+        "ts": target.platform_message_id,
+        "text": new_text,
+    })
 }
 
 fn encode_thread_target(channel_id: &str, thread_ts: Option<&str>) -> String {
@@ -477,5 +516,22 @@ mod tests {
 
         assert_eq!(body["channel"], serde_json::json!("C123"));
         assert_eq!(body["thread_ts"], serde_json::json!("1710000000.000001"));
+    }
+
+    #[test]
+    fn build_edit_body_uses_channel_from_thread_target() {
+        let body = build_edit_body(
+            &EditMessageTarget {
+                account_id: "default".into(),
+                to: "C123".into(),
+                thread_id: Some("C123:thread:1710000000.000001".into()),
+                platform_message_id: "1710000000.123456".into(),
+            },
+            "updated",
+        );
+
+        assert_eq!(body["channel"], serde_json::json!("C123"));
+        assert_eq!(body["ts"], serde_json::json!("1710000000.123456"));
+        assert_eq!(body["text"], serde_json::json!("updated"));
     }
 }
