@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_util::StreamExt;
 use reqwest::Client;
 use tracing::{info, warn};
@@ -8,11 +9,13 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
 use crate::media_text::text_quote_or_attachment_placeholder;
+use crate::outbound_media::attachment_bytes;
 use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const SIGNAL_API_PATH_CHECK: &str = "/api/v1/check";
 const SIGNAL_API_PATH_EVENTS: &str = "/api/v1/events";
 const SIGNAL_API_PATH_RPC: &str = "/api/v1/rpc";
+const SIGNAL_API_PATH_SEND: &str = "/v2/send";
 
 pub struct SignalChannel {
     base_url: String,
@@ -166,10 +169,14 @@ impl ChannelPlugin for SignalChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
-        let body = build_send_request(&msg, self.account.as_deref());
+        let (endpoint, body) = if msg.attachments.is_empty() {
+            (self.endpoint(SIGNAL_API_PATH_RPC), build_send_request(&msg, self.account.as_deref())?)
+        } else {
+            (self.endpoint(SIGNAL_API_PATH_SEND), build_send_attachment_request(&msg, self.account.as_deref())?)
+        };
         let resp = self
             .client
-            .post(self.endpoint(SIGNAL_API_PATH_RPC))
+            .post(endpoint)
             .json(&body)
             .send()
             .await
@@ -500,7 +507,7 @@ fn detect_group_mention(mentions: Option<&[SignalMention]>, configured_account: 
     })
 }
 
-fn build_send_request(msg: &OutboundMessage, account: Option<&str>) -> serde_json::Value {
+fn build_send_request(msg: &OutboundMessage, account: Option<&str>) -> Result<serde_json::Value> {
     let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::Plain);
     let mut params = serde_json::json!({
         "message": text,
@@ -522,12 +529,55 @@ fn build_send_request(msg: &OutboundMessage, account: Option<&str>) -> serde_jso
         }
     }
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "jsonrpc": "2.0",
         "method": "send",
         "params": params,
         "id": uuid::Uuid::new_v4().to_string(),
-    })
+    }))
+}
+
+fn build_send_attachment_request(
+    msg: &OutboundMessage,
+    account: Option<&str>,
+) -> Result<serde_json::Value> {
+    let number = account.ok_or_else(|| FrankClawError::Channel {
+        channel: ChannelId::new("signal"),
+        msg: "signal attachment sends require a configured account number".into(),
+    })?;
+    let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::Plain);
+    let attachments = msg
+        .attachments
+        .iter()
+        .map(|attachment| {
+            attachment_bytes(&ChannelId::new("signal"), attachment).map(|bytes| {
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut body = serde_json::json!({
+        "message": text,
+        "number": number,
+        "base64_attachments": attachments,
+    });
+
+    match resolve_signal_target(msg.thread_id.as_deref(), &msg.to) {
+        SignalTarget::Recipient(recipient) => {
+            body["recipients"] = serde_json::json!([recipient]);
+        }
+        SignalTarget::Group(group_id) => {
+            body["recipients"] = serde_json::json!([format!("group.{group_id}")]);
+        }
+        SignalTarget::Username(username) => {
+            return Err(FrankClawError::Channel {
+                channel: ChannelId::new("signal"),
+                msg: format!("signal attachment sends do not support username target '{username}'"),
+            });
+        }
+    }
+
+    Ok(body)
 }
 
 enum SignalTarget {
@@ -684,7 +734,8 @@ mod tests {
                 reply_to: None,
             },
             Some("+15551234567"),
-        );
+        )
+        .expect("send request should build");
 
         assert_eq!(body["method"], serde_json::json!("send"));
         assert_eq!(body["params"]["groupId"], serde_json::json!("group-42"));
@@ -705,9 +756,63 @@ mod tests {
                 reply_to: None,
             },
             Some("+15551234567"),
-        );
+        )
+        .expect("send request should build");
 
         assert_eq!(body["params"]["message"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn build_send_attachment_request_uses_v2_shape_for_recipients() {
+        let body = build_send_attachment_request(
+            &OutboundMessage {
+                channel: ChannelId::new("signal"),
+                account_id: "default".into(),
+                to: "+15550001111".into(),
+                thread_id: None,
+                text: "hello".into(),
+                attachments: vec![OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("photo.png".into()),
+                    url: None,
+                    bytes: b"png".to_vec(),
+                }],
+                reply_to: None,
+            },
+            Some("+15551234567"),
+        )
+        .expect("attachment request should build");
+
+        assert_eq!(body["number"], serde_json::json!("+15551234567"));
+        assert_eq!(body["recipients"], serde_json::json!(["+15550001111"]));
+        assert_eq!(body["message"], serde_json::json!("hello"));
+        assert_eq!(body["base64_attachments"][0], serde_json::json!("cG5n"));
+    }
+
+    #[test]
+    fn build_send_attachment_request_uses_group_recipient_marker() {
+        let body = build_send_attachment_request(
+            &OutboundMessage {
+                channel: ChannelId::new("signal"),
+                account_id: "default".into(),
+                to: "+15550001111".into(),
+                thread_id: Some("group:group-42".into()),
+                text: "hello".into(),
+                attachments: vec![OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("photo.png".into()),
+                    url: None,
+                    bytes: b"png".to_vec(),
+                }],
+                reply_to: None,
+            },
+            Some("+15551234567"),
+        )
+        .expect("attachment request should build");
+
+        assert_eq!(body["recipients"], serde_json::json!(["group.group-42"]));
     }
 
     #[test]
