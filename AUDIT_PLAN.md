@@ -125,12 +125,12 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 4. WhatsApp Channel
 
-**Status:** TODO
+**Status:** IN PROGRESS
 
 ### Critical
 
-- [ ] **Phone number JID device suffix**: JIDs include device suffixes like `41796666864:0@s.whatsapp.net`. Must extract only digits before the colon. Without this, phone numbers get corrupted with extra digits.
-- [ ] **Status/broadcast message filtering**: Filter JIDs ending in `@status` or `@broadcast`. Processing these causes spurious auto-replies.
+- [ ] **Phone number JID device suffix**: JIDs include device suffixes like `41796666864:0@s.whatsapp.net`. Must extract only digits before the colon. Without this, phone numbers get corrupted with extra digits. (N/A for Cloud API — uses phone numbers directly.)
+- [x] **Status/broadcast message filtering**: Filter non-content message types (reaction, status, system, ephemeral, etc.) to prevent spurious auto-replies. Only process text, image, video, audio, document, sticker, interactive, and button types.
 - [ ] **Echo detection (self-reply loop)**: In same-phone mode, detect echoed messages by tracking recently sent text. Without this, self-phone setups have infinite reply loops.
 
 ### High

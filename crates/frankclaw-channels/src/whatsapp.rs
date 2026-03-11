@@ -243,12 +243,12 @@ impl ChannelPlugin for WhatsAppChannel {
             });
         }
 
-        Ok(SendResult::Failed {
-            reason: body["error"]["message"]
-                .as_str()
-                .unwrap_or("unknown whatsapp send failure")
-                .to_string(),
-        })
+        let error_code = body["error"]["code"].as_u64().unwrap_or(0);
+        let error_msg = body["error"]["message"]
+            .as_str()
+            .unwrap_or("unknown whatsapp send failure");
+        let reason = classify_whatsapp_send_error(error_code, error_msg);
+        Ok(SendResult::Failed { reason })
     }
 }
 
@@ -290,6 +290,15 @@ pub fn parse_webhook_payload(payload: &serde_json::Value) -> Vec<InboundMessage>
                 let Some(sender_id) = message["from"].as_str() else {
                     continue;
                 };
+
+                // Skip non-content message types (status updates, reactions,
+                // read receipts, etc.) to prevent spurious processing.
+                if let Some(msg_type) = message["type"].as_str() {
+                    if !is_processable_message_type(msg_type) {
+                        continue;
+                    }
+                }
+
                 let attachments = build_inbound_attachments(message);
                 let message_text = extract_message_text(message);
                 let text = text_or_attachment_placeholder(
@@ -444,6 +453,28 @@ fn build_media_send_body(
     }
 
     body
+}
+
+/// Message types that contain user content worth processing.
+/// Excludes: reaction, status, system, ephemeral, order, unknown, etc.
+fn is_processable_message_type(msg_type: &str) -> bool {
+    matches!(
+        msg_type,
+        "text" | "image" | "video" | "audio" | "document" | "sticker"
+            | "interactive" | "button" | "contacts" | "location"
+    )
+}
+
+/// Provide human-readable error messages for common WhatsApp API errors.
+fn classify_whatsapp_send_error(code: u64, message: &str) -> String {
+    match code {
+        131030 => "recipient phone number is not a WhatsApp user".into(),
+        131031 => "recipient cannot receive messages (blocked or opt-out)".into(),
+        131047 => "message failed to send (re-engagement required)".into(),
+        131051 => "unsupported message type for this recipient".into(),
+        130429 => "rate limit reached for this phone number".into(),
+        _ => message.to_string(),
+    }
 }
 
 fn parse_unix_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -779,5 +810,69 @@ mod tests {
             channel.verify_signature(body, Some("sha256=deadbeef")),
             Err(FrankClawError::AuthFailed)
         ));
+    }
+
+    // --- Audit regression tests ---
+
+    #[test]
+    fn is_processable_message_type_accepts_content_types() {
+        for t in ["text", "image", "video", "audio", "document", "sticker", "interactive", "button"] {
+            assert!(is_processable_message_type(t), "should accept {t}");
+        }
+    }
+
+    #[test]
+    fn is_processable_message_type_rejects_non_content_types() {
+        for t in ["reaction", "status", "system", "ephemeral", "order", "unknown"] {
+            assert!(!is_processable_message_type(t), "should reject {t}");
+        }
+    }
+
+    #[test]
+    fn parse_webhook_payload_skips_reaction_messages() {
+        let payload = serde_json::json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": { "phone_number_id": "12345" },
+                        "contacts": [{ "wa_id": "15551234567", "profile": { "name": "User" } }],
+                        "messages": [
+                            {
+                                "from": "15551234567",
+                                "type": "reaction",
+                                "id": "wamid.reaction1",
+                                "timestamp": "1700000000",
+                                "reaction": { "message_id": "wamid.1", "emoji": "👍" }
+                            },
+                            {
+                                "from": "15551234567",
+                                "type": "text",
+                                "id": "wamid.text1",
+                                "timestamp": "1700000000",
+                                "text": { "body": "hello" }
+                            }
+                        ]
+                    }
+                }]
+            }]
+        });
+
+        let messages = parse_webhook_payload(&payload);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn classify_whatsapp_send_error_provides_helpful_messages() {
+        assert!(classify_whatsapp_send_error(131030, "").contains("not a WhatsApp user"));
+        assert!(classify_whatsapp_send_error(131031, "").contains("blocked"));
+    }
+
+    #[test]
+    fn classify_whatsapp_send_error_passes_through_unknown_codes() {
+        assert_eq!(
+            classify_whatsapp_send_error(0, "some error"),
+            "some error"
+        );
     }
 }
