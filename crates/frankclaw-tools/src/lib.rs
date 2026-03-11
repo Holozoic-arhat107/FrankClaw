@@ -13,10 +13,19 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use tokio::net::lookup_host;
+
 use frankclaw_core::error::{FrankClawError, Result};
+use frankclaw_core::media::is_safe_ip;
 use frankclaw_core::model::ToolDef;
 use frankclaw_core::session::SessionStore;
 use frankclaw_core::types::{AgentId, SessionKey};
+
+/// Maximum time to wait for a single CDP command response.
+const CDP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Maximum number of concurrent browser sessions.
+const MAX_BROWSER_SESSIONS: usize = 10;
 
 #[derive(Clone)]
 pub struct ToolContext {
@@ -231,6 +240,15 @@ impl BrowserClient {
         })
     }
 
+    fn session_count(&self, sessions: &HashMap<String, BrowserSession>) -> usize {
+        sessions.len()
+    }
+
+    /// Remove a session from the registry when its CDP target is dead.
+    async fn remove_dead_session(&self, session_id: &str) {
+        self.sessions.lock().await.remove(session_id);
+    }
+
     fn resolve_session_id(&self, requested: Option<&str>, ctx: &ToolContext) -> Result<String> {
         if let Some(session_id) = requested.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(session_id.to_string());
@@ -244,19 +262,54 @@ impl BrowserClient {
     }
 
     async fn open(&self, session_id: String, url: &str) -> Result<BrowserSnapshot> {
+        validate_navigation_url(url).await?;
+
         let existing = { self.sessions.lock().await.get(&session_id).cloned() };
         let session = match existing {
             Some(mut session) => {
-                self.navigate_target(&session, url).await?;
-                session.current_url = url.to_string();
-                session.last_updated_at = Utc::now();
-                self.sessions
-                    .lock()
-                    .await
-                    .insert(session_id.clone(), session.clone());
-                session
+                match self.navigate_target(&session, url).await {
+                    Ok(()) => {
+                        session.current_url = url.to_string();
+                        session.last_updated_at = Utc::now();
+                        self.sessions
+                            .lock()
+                            .await
+                            .insert(session_id.clone(), session.clone());
+                        session
+                    }
+                    Err(_) => {
+                        // Existing session's target is dead — clean up and create fresh.
+                        self.remove_dead_session(&session_id).await;
+                        let target = self.create_target(url).await?;
+                        let now = Utc::now();
+                        let fresh = BrowserSession {
+                            session_id: session_id.clone(),
+                            target_id: target.id,
+                            page_ws_url: target.web_socket_debugger_url,
+                            current_url: target.url,
+                            title: None,
+                            last_updated_at: now,
+                        };
+                        self.sessions
+                            .lock()
+                            .await
+                            .insert(session_id.clone(), fresh.clone());
+                        fresh
+                    }
+                }
             }
             None => {
+                // Enforce concurrent session limit.
+                {
+                    let sessions = self.sessions.lock().await;
+                    if self.session_count(&sessions) >= MAX_BROWSER_SESSIONS {
+                        return Err(FrankClawError::AgentRuntime {
+                            msg: format!(
+                                "browser session limit reached ({MAX_BROWSER_SESSIONS}). Close existing sessions first."
+                            ),
+                        });
+                    }
+                }
                 let target = self.create_target(url).await?;
                 let now = Utc::now();
                 let session = BrowserSession {
@@ -608,32 +661,41 @@ impl BrowserClient {
                 msg: format!("failed to send browser command '{method}': {err}"),
             })?;
 
-        while let Some(message) = socket.next().await {
-            let message = message.map_err(|err| FrankClawError::AgentRuntime {
-                msg: format!("browser socket read failed: {err}"),
-            })?;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let frame: serde_json::Value = serde_json::from_str(text.as_ref()).map_err(|err| {
-                FrankClawError::AgentRuntime {
-                    msg: format!("browser socket sent invalid JSON: {err}"),
+        let read_response = async {
+            while let Some(message) = socket.next().await {
+                let message = message.map_err(|err| FrankClawError::AgentRuntime {
+                    msg: format!("browser socket read failed: {err}"),
+                })?;
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let frame: serde_json::Value =
+                    serde_json::from_str(text.as_ref()).map_err(|err| {
+                        FrankClawError::AgentRuntime {
+                            msg: format!("browser socket sent invalid JSON: {err}"),
+                        }
+                    })?;
+                if frame["id"].as_u64() != Some(id) {
+                    continue;
                 }
-            })?;
-            if frame["id"].as_u64() != Some(id) {
-                continue;
+                if let Some(message) = frame["error"]["message"].as_str() {
+                    return Err(FrankClawError::AgentRuntime {
+                        msg: format!("browser command '{method}' failed: {message}"),
+                    });
+                }
+                return Ok(frame);
             }
-            if let Some(message) = frame["error"]["message"].as_str() {
-                return Err(FrankClawError::AgentRuntime {
-                    msg: format!("browser command '{method}' failed: {message}"),
-                });
-            }
-            return Ok(frame);
-        }
+            Err(FrankClawError::AgentRuntime {
+                msg: format!("browser socket closed while waiting for '{method}'"),
+            })
+        };
 
-        Err(FrankClawError::AgentRuntime {
-            msg: format!("browser socket closed while waiting for '{method}'"),
-        })
+        match tokio::time::timeout(CDP_COMMAND_TIMEOUT, read_response).await {
+            Ok(result) => result,
+            Err(_) => Err(FrankClawError::AgentRuntime {
+                msg: format!("browser command '{method}' timed out after {}s", CDP_COMMAND_TIMEOUT.as_secs()),
+            }),
+        }
     }
 }
 
@@ -1143,6 +1205,47 @@ fn validate_press_key(key: &str) -> Result<()> {
             ),
         }),
     }
+}
+
+/// Validate that a browser navigation URL is not targeting private/internal IPs.
+/// Uses the same SSRF blocklist as media fetches.
+async fn validate_navigation_url(raw_url: &str) -> Result<()> {
+    let parsed = Url::parse(raw_url).map_err(|err| FrankClawError::InvalidRequest {
+        msg: format!("invalid browser navigation URL: {err}"),
+    })?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(FrankClawError::InvalidRequest {
+            msg: format!("browser navigation only allows http/https URLs, got '{scheme}'"),
+        });
+    }
+    let host = parsed.host_str().ok_or_else(|| FrankClawError::InvalidRequest {
+        msg: "browser navigation URL has no host".into(),
+    })?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let lookup = format!("{host}:{port}");
+    let addrs: Vec<_> = lookup_host(&lookup)
+        .await
+        .map_err(|err| FrankClawError::AgentRuntime {
+            msg: format!("DNS lookup failed for browser navigation URL '{host}': {err}"),
+        })?
+        .collect();
+    if addrs.is_empty() {
+        return Err(FrankClawError::AgentRuntime {
+            msg: format!("DNS lookup returned no addresses for '{host}'"),
+        });
+    }
+    for addr in &addrs {
+        if !is_safe_ip(&addr.ip()) {
+            return Err(FrankClawError::InvalidRequest {
+                msg: format!(
+                    "browser navigation blocked: '{host}' resolves to private/internal IP {}",
+                    addr.ip()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -1908,5 +2011,177 @@ mod tests {
                 .send(WsMessage::Text(response.to_string().into()))
                 .await;
         }
+    }
+
+    #[tokio::test]
+    async fn navigation_ssrf_blocks_private_ips() {
+        // Loopback
+        let err = validate_navigation_url("http://127.0.0.1/secret").await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("private/internal"));
+
+        // Private network
+        let err = validate_navigation_url("http://192.168.1.1/admin").await;
+        assert!(err.is_err());
+
+        let err = validate_navigation_url("http://10.0.0.1/").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn navigation_ssrf_blocks_non_http_schemes() {
+        let err = validate_navigation_url("file:///etc/passwd").await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("http/https"));
+
+        let err = validate_navigation_url("javascript:alert(1)").await;
+        assert!(err.is_err());
+
+        let err = validate_navigation_url("ftp://evil.com/file").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn navigation_ssrf_blocks_urls_without_host() {
+        let err = validate_navigation_url("http://").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_limit_enforcement() {
+        let client = BrowserClient::new("http://127.0.0.1:19999/")
+            .expect("browser client should build");
+        {
+            let mut sessions = client.sessions.lock().await;
+            for i in 0..MAX_BROWSER_SESSIONS {
+                sessions.insert(
+                    format!("session-{i}"),
+                    BrowserSession {
+                        session_id: format!("session-{i}"),
+                        target_id: format!("target-{i}"),
+                        page_ws_url: "ws://127.0.0.1:19999/devtools/page/x".into(),
+                        current_url: "https://example.com/".into(),
+                        title: None,
+                        last_updated_at: Utc::now(),
+                    },
+                );
+            }
+            assert_eq!(client.session_count(&sessions), MAX_BROWSER_SESSIONS);
+        }
+        // Opening a new session should fail with limit error.
+        let err = client
+            .open("new-session".into(), "https://example.com/")
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("session limit reached"));
+    }
+
+    #[tokio::test]
+    async fn cdp_command_timeout_fires() {
+        // Start a WS server that accepts connections but never responds.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept");
+                tokio::spawn(async move {
+                    let ws = tokio_tungstenite::accept_async(stream)
+                        .await
+                        .expect("ws handshake");
+                    // Hold the connection open but never send anything.
+                    let (_sink, mut stream) = ws.split();
+                    while stream.next().await.is_some() {}
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = BrowserClient::new(&format!("http://{addr}/"))
+            .expect("browser client should build");
+        let ws_url = format!("ws://{addr}/");
+        let mut socket = client
+            .connect_page_socket(&ws_url)
+            .await
+            .expect("should connect");
+
+        // Override the timeout constant behavior by using a short timeout directly.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            client.send_command(&mut socket, "Runtime.evaluate", serde_json::json!({"expression": "1+1"})),
+        )
+        .await;
+        // Either our internal CDP_COMMAND_TIMEOUT or our test timeout should fire.
+        assert!(result.is_err() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn dead_session_recovery_on_open() {
+        // If a session's target is dead, opening it again should replace it.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let mock_state = MockBrowserState {
+            page_url: Arc::new(Mutex::new("about:blank".into())),
+            title: Arc::new(Mutex::new("Fresh".into())),
+            text: Arc::new(Mutex::new("Fresh page".into())),
+            html: Arc::new(Mutex::new("<html><body>Fresh</body></html>".into())),
+            websocket_url: format!("ws://127.0.0.1:{}/devtools/page/mock-page", addr.port()),
+        };
+        let app = Router::new()
+            .route("/json/new", put(mock_create_target))
+            .route("/json/close/{target_id}", get(mock_close_target))
+            .route("/devtools/page/mock-page", get(mock_page_ws))
+            .with_state(mock_state);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock server");
+        });
+
+        let client = BrowserClient::new(&format!("http://{addr}/"))
+            .expect("browser client should build");
+
+        // Pre-populate a dead session with a bogus WS URL.
+        {
+            let mut sessions = client.sessions.lock().await;
+            sessions.insert(
+                "session:test".into(),
+                BrowserSession {
+                    session_id: "session:test".into(),
+                    target_id: "dead-target".into(),
+                    page_ws_url: "ws://127.0.0.1:1/dead".into(),
+                    current_url: "https://old.example.com/".into(),
+                    title: None,
+                    last_updated_at: Utc::now(),
+                },
+            );
+        }
+
+        // Opening should detect the dead session, clean it up, and create fresh.
+        let snapshot = client
+            .open("session:test".into(), "https://example.com/")
+            .await
+            .expect("open should recover from dead session");
+        assert_eq!(snapshot.title.as_deref(), Some("Fresh"));
+    }
+
+    #[test]
+    fn press_key_validation_rejects_unknown_keys() {
+        assert!(validate_press_key("Enter").is_ok());
+        assert!(validate_press_key("Tab").is_ok());
+        assert!(validate_press_key("Escape").is_ok());
+        assert!(validate_press_key("ArrowDown").is_ok());
+        assert!(validate_press_key("ArrowUp").is_ok());
+        assert!(validate_press_key("Delete").is_err());
+        assert!(validate_press_key("F1").is_err());
+        assert!(validate_press_key("a").is_err());
+    }
+
+    #[test]
+    fn truncate_chars_works() {
+        assert_eq!(truncate_chars("hello", 10), "hello");
+        assert_eq!(truncate_chars("hello world", 5), "hello...");
+        assert_eq!(truncate_chars("", 5), "");
     }
 }

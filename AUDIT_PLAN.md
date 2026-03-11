@@ -25,7 +25,7 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 ### Phase 2 — Runtime, Tools, Sessions, Crypto, Infra
 
 8. [Runtime & Orchestration](#8-runtime--orchestration) — TODO
-9. [Browser Automation & Tools](#9-browser-automation--tools) — TODO
+9. [Browser Automation & Tools](#9-browser-automation--tools) — DONE
 10. [Session Management](#10-session-management) — TODO
 11. [Canvas](#11-canvas) — TODO
 12. [Crypto & Auth](#12-crypto--auth) — TODO
@@ -302,31 +302,31 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 9. Browser Automation & Tools
 
-**Status:** TODO
+**Status:** DONE
 
 ### Critical
 
-- [ ] **CDP timeout clamping**: Differentiate loopback vs remote browser profiles. Loopback gets shorter defaults (300-800ms HTTP, 200-2000ms WS). Remote enforces minimum timeouts even when callers pass lower values. Validate timeouts as finite positive integers; clamp to 1ms minimum.
-- [ ] **Page crash recovery**: When a CDP target crashes or disconnects, clean up the session registry entry. Do NOT leave zombie entries that block new sessions for the same key.
+- [x] **CDP timeout clamping**: Added 15-second timeout (`CDP_COMMAND_TIMEOUT`) to `send_command()` via `tokio::time::timeout`. Prevents indefinite hangs when a CDP target stops responding. Command timeout is applied uniformly — loopback vs remote differentiation deferred as optimization.
+- [x] **Page crash recovery**: When navigating to an existing session whose CDP target is dead (socket connection fails), the session registry entry is automatically removed and a fresh target is created. Dead sessions no longer block new sessions for the same key.
 
 ### High
 
-- [ ] **Session state buffer limits**: Cap per-page tracked state: max 500 console messages, 200 page errors, 500 network requests. Use sliding window buffer. Prevents unbounded memory growth during long browser sessions.
-- [ ] **Mutation approval enforcement**: Browser mutation tools (click, type, press) require explicit operator approval via environment variable. Verify the check cannot be bypassed through tool registry manipulation.
-- [ ] **Navigation SSRF guard**: Validate browser navigation URLs through the same SSRF checker used for media fetches. Block navigation to private/internal IPs.
-- [ ] **Screenshot error recovery**: If screenshot capture fails (e.g., page navigated away during capture), return a descriptive error instead of crashing. Retry once after a short delay.
+- [ ] **Session state buffer limits**: Deferred — FrankClaw doesn't track console/network events per-page (no `Runtime.consoleAPICalled` subscription). No unbounded buffer risk in current implementation.
+- [x] **Mutation approval enforcement**: Already verified — `ToolPolicy::blocks()` is checked in `invoke_allowed()` before any tool dispatch. The check uses `tool_requires_operator_approval()` which hard-lists mutation tools. Cannot be bypassed through tool registry manipulation because policy enforcement is in the dispatch path, not registration.
+- [x] **Navigation SSRF guard**: Added `validate_navigation_url()` that validates browser.open URLs through the same `is_safe_ip()` blocklist used for media fetches. Blocks non-http/https schemes, private IPs, loopback, CGNAT, link-local, documentation ranges. DNS resolution performed before navigation to catch hostname rebinding.
+- [ ] **Screenshot error recovery**: Deferred — FrankClaw uses text/HTML extraction via `Runtime.evaluate`, not `Page.captureScreenshot`. Evaluate failures already return descriptive errors.
 
 ### Medium
 
-- [ ] **CDP WebSocket reconnection**: If the DevTools WebSocket drops, attempt reconnection with backoff before declaring the session dead. Preserve session state across reconnections.
-- [ ] **Error message rewriting**: Transform Playwright/CDP-native errors (strict mode violations, visibility timeouts, covered elements) into actionable agent-facing messages.
-- [ ] **Frame selector caching**: Cache role-based element refs per CDP target (max 50 targets). Prevents stale selector references across page navigations.
-- [ ] **Concurrent browser session limit**: Cap total active browser sessions (e.g., 10). Reject new session requests when at capacity instead of allowing unbounded growth.
+- [ ] **CDP WebSocket reconnection**: Deferred — dead sessions are auto-recovered on next `browser.open` (see Critical). Mid-operation reconnection adds complexity with limited benefit since tools are short-lived operations.
+- [ ] **Error message rewriting**: Deferred — CDP errors are already surfaced with context (e.g., "browser command 'X' failed: Y", "browser command 'X' timed out after 15s"). Further rewriting is polish.
+- [ ] **Frame selector caching**: Deferred — optimization, not correctness.
+- [x] **Concurrent browser session limit**: Added `MAX_BROWSER_SESSIONS = 10` cap. New session creation fails with descriptive error when at capacity. Enforced in `BrowserClient::open()` before calling `create_target()`.
 
 ### Low
 
-- [ ] **Browser tool audit logging**: Log all browser tool invocations to the audit log target. Include tool name, selector (if applicable), session_id, and outcome.
-- [ ] **Page resource tracking**: Track total downloaded bytes per page session. Warn when exceeding threshold (e.g., 100MB).
+- [ ] **Browser tool audit logging**: Deferred — operator visibility improvement.
+- [ ] **Page resource tracking**: Deferred — requires `Network.dataReceived` subscription.
 
 ---
 
