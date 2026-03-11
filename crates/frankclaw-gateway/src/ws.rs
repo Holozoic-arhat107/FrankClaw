@@ -201,6 +201,9 @@ async fn dispatch_method(
         Method::CanvasGet => {
             crate::methods::canvas_get(state, request).await
         }
+        Method::CanvasExport => {
+            crate::methods::canvas_export(state, request).await
+        }
         Method::CanvasSet => {
             crate::methods::canvas_set(state, request).await
         }

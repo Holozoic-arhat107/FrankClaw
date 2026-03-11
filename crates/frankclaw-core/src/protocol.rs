@@ -79,6 +79,7 @@ pub enum Method {
 
     // Canvas
     CanvasGet,
+    CanvasExport,
     CanvasSet,
     CanvasPatch,
     CanvasClear,

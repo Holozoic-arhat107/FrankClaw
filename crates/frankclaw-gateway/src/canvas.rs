@@ -37,6 +37,42 @@ pub struct CanvasPatch {
     pub append_blocks: Vec<CanvasBlock>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasExportFormat {
+    Json,
+    Markdown,
+}
+
+impl CanvasExportFormat {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("markdown") | Some("md") => Self::Markdown,
+            _ => Self::Json,
+        }
+    }
+
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            Self::Json => "application/json; charset=utf-8",
+            Self::Markdown => "text/markdown; charset=utf-8",
+        }
+    }
+
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct CanvasStore {
     documents: tokio::sync::RwLock<HashMap<String, CanvasDocument>>,
@@ -105,5 +141,106 @@ impl CanvasStore {
 
     pub async fn clear(&self, canvas_id: &str) {
         self.documents.write().await.remove(canvas_id);
+    }
+}
+
+pub fn export_document(document: &CanvasDocument, format: CanvasExportFormat) -> String {
+    match format {
+        CanvasExportFormat::Json => serde_json::to_string_pretty(document)
+            .unwrap_or_else(|_| "{}".to_string()),
+        CanvasExportFormat::Markdown => render_markdown(document),
+    }
+}
+
+fn render_markdown(document: &CanvasDocument) -> String {
+    let mut sections = Vec::new();
+
+    if !document.title.trim().is_empty() {
+        sections.push(format!("# {}", document.title.trim()));
+    }
+
+    let mut metadata = vec![
+        format!("Canvas: {}", document.id),
+        format!("Revision: {}", document.revision),
+        format!("Updated: {}", document.updated_at.to_rfc3339()),
+    ];
+    if let Some(session_key) = document.session_key.as_deref().filter(|value| !value.trim().is_empty()) {
+        metadata.push(format!("Session: {}", session_key.trim()));
+    }
+    sections.push(metadata.join("\n"));
+
+    if !document.body.trim().is_empty() {
+        sections.push(document.body.trim().to_string());
+    }
+
+    if !document.blocks.is_empty() {
+        let blocks = document
+            .blocks
+            .iter()
+            .map(render_markdown_block)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sections.push(blocks);
+    }
+
+    sections.join("\n\n")
+}
+
+fn render_markdown_block(block: &CanvasBlock) -> String {
+    let text = block.text.trim();
+    match block.kind {
+        CanvasBlockKind::Markdown => text.to_string(),
+        CanvasBlockKind::Code => format!("```text\n{}\n```", text),
+        CanvasBlockKind::Note => text
+            .lines()
+            .map(|line| format!("> {}", line.trim()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        CanvasBlockKind::Checklist => text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let line = line.trim();
+                if line.starts_with("- [") {
+                    line.to_string()
+                } else {
+                    format!("- [ ] {}", line)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_document_renders_markdown_snapshot() {
+        let document = CanvasDocument {
+            id: "ops".into(),
+            title: "Ops Runbook".into(),
+            body: "Current deployment summary".into(),
+            session_key: Some("default:web:control".into()),
+            blocks: vec![
+                CanvasBlock {
+                    kind: CanvasBlockKind::Note,
+                    text: "deploy window open".into(),
+                },
+                CanvasBlock {
+                    kind: CanvasBlockKind::Checklist,
+                    text: "verify smoke tests\nnotify team".into(),
+                },
+            ],
+            revision: 3,
+            updated_at: chrono::DateTime::from_timestamp(1_710_000_000, 0).unwrap(),
+        };
+
+        let export = export_document(&document, CanvasExportFormat::Markdown);
+        assert!(export.contains("# Ops Runbook"));
+        assert!(export.contains("Session: default:web:control"));
+        assert!(export.contains("> deploy window open"));
+        assert!(export.contains("- [ ] verify smoke tests"));
     }
 }

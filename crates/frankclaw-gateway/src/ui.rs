@@ -361,6 +361,10 @@ pub async fn index() -> Html<&'static str> {
               <button id="canvas-push-btn">Push Canvas</button>
               <button id="canvas-append-btn" class="secondary">Append Block</button>
             </div>
+            <div class="chat-row">
+              <button id="canvas-export-md-btn" class="secondary">Export Markdown</button>
+              <button id="canvas-export-json-btn" class="secondary">Export JSON</button>
+            </div>
             <div class="auth-row">
               <label>Block kind
                 <select id="canvas-block-kind">
@@ -427,6 +431,8 @@ pub async fn index() -> Html<&'static str> {
       canvasBlockText: document.getElementById("canvas-block-text"),
       canvasPushBtn: document.getElementById("canvas-push-btn"),
       canvasAppendBtn: document.getElementById("canvas-append-btn"),
+      canvasExportMdBtn: document.getElementById("canvas-export-md-btn"),
+      canvasExportJsonBtn: document.getElementById("canvas-export-json-btn"),
       canvasClearBtn: document.getElementById("canvas-clear-btn"),
       canvasStage: document.getElementById("canvas-stage"),
     };
@@ -487,6 +493,18 @@ pub async fn index() -> Html<&'static str> {
 
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function downloadTextFile(filename, mimeType, content) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     }
 
     function renderPendingAttachments() {
@@ -837,6 +855,30 @@ pub async fn index() -> Html<&'static str> {
       });
       els.canvasBlockText.value = "";
       renderCanvas(response.canvas || null);
+    });
+
+    els.canvasExportMdBtn.addEventListener("click", async () => {
+      const response = await rpc("canvas_export", {
+        ...canvasParams(),
+        format: "markdown",
+      });
+      downloadTextFile(
+        response.filename || "canvas.md",
+        response.mime_type || "text/markdown; charset=utf-8",
+        response.content || ""
+      );
+    });
+
+    els.canvasExportJsonBtn.addEventListener("click", async () => {
+      const response = await rpc("canvas_export", {
+        ...canvasParams(),
+        format: "json",
+      });
+      downloadTextFile(
+        response.filename || "canvas.json",
+        response.mime_type || "application/json; charset=utf-8",
+        response.content || "{}"
+      );
     });
 
     els.canvasClearBtn.addEventListener("click", async () => {

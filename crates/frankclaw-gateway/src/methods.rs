@@ -288,6 +288,36 @@ pub async fn canvas_get(
     ResponseFrame::ok(request.id, serde_json::json!({ "canvas": canvas }))
 }
 
+/// Handle `canvas.export` method.
+pub async fn canvas_export(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let canvas_id = canvas_id_from_params(&request.params);
+    let Some(canvas) = state.canvas.get(&canvas_id).await else {
+        return ResponseFrame::err(request.id, 404, "canvas not found");
+    };
+    let format = crate::canvas::CanvasExportFormat::parse(
+        request.params.get("format").and_then(|value| value.as_str()),
+    );
+    let filename = format!(
+        "{}.{}",
+        sanitize_canvas_export_name(&canvas.id),
+        format.extension()
+    );
+
+    ResponseFrame::ok(
+        request.id,
+        serde_json::json!({
+            "canvas_id": canvas.id,
+            "format": format.label(),
+            "mime_type": format.mime_type(),
+            "filename": filename,
+            "content": crate::canvas::export_document(&canvas, format),
+        }),
+    )
+}
+
 /// Handle `canvas.set` method.
 pub async fn canvas_set(
     state: &Arc<GatewayState>,
@@ -413,6 +443,26 @@ fn broadcast_canvas_update(
     });
     if let Ok(json) = serde_json::to_string(&event) {
         let _ = state.broadcast.send(json);
+    }
+}
+
+fn sanitize_canvas_export_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "canvas".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -791,6 +841,35 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value["canvas"]["revision"].as_u64()),
             Some(1)
+        );
+
+        let export_response = canvas_export(
+            &state,
+            RequestFrame {
+                id: RequestId::Text("export".into()),
+                method: Method::CanvasExport,
+                params: serde_json::json!({
+                    "canvas_id": "ops",
+                    "format": "markdown",
+                }),
+            },
+        )
+        .await;
+        assert!(export_response.error.is_none());
+        assert_eq!(
+            export_response
+                .result
+                .as_ref()
+                .and_then(|value| value["filename"].as_str()),
+            Some("ops.md")
+        );
+        assert!(
+            export_response
+                .result
+                .as_ref()
+                .and_then(|value| value["content"].as_str())
+                .expect("export should include markdown content")
+                .contains("Current deployment summary")
         );
 
         let patch_response = canvas_patch(
