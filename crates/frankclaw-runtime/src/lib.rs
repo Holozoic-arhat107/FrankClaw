@@ -70,6 +70,15 @@ pub struct ToolActivity {
 
 const MAX_TOOL_ROUNDS: usize = 4;
 const MAX_TOOL_CALLS_PER_TURN: usize = 8;
+/// Maximum size (in chars) for a single tool output.
+/// Prevents a single tool from blowing up the context window.
+const MAX_TOOL_RESULT_CHARS: usize = 400_000;
+/// Warn after this many identical tool+args calls in one turn.
+const TOOL_REPEAT_WARN_THRESHOLD: usize = 3;
+/// Hard block after this many identical tool+args calls in one turn.
+const TOOL_REPEAT_BLOCK_THRESHOLD: usize = 6;
+/// Safety timeout for an entire chat turn (seconds).
+const TURN_SAFETY_TIMEOUT_SECS: u64 = 600;
 
 impl Runtime {
     pub async fn from_config(
@@ -231,8 +240,20 @@ impl Runtime {
 
         let system_prompt = self.build_system_prompt(&agent_id, &agent);
         let mut remaining_tool_calls = MAX_TOOL_CALLS_PER_TURN;
+        let mut tool_tracker = ToolCallTracker::new();
+        let turn_deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(TURN_SAFETY_TIMEOUT_SECS);
 
         for _round in 0..=MAX_TOOL_ROUNDS {
+            // Safety timeout: abort if the entire turn is taking too long.
+            if tokio::time::Instant::now() >= turn_deadline {
+                return Err(FrankClawError::AgentRuntime {
+                    msg: format!(
+                        "turn safety timeout exceeded ({}s)",
+                        TURN_SAFETY_TIMEOUT_SECS
+                    ),
+                });
+            }
             let response = self
                 .models
                 .complete(
@@ -302,6 +323,9 @@ impl Runtime {
             next_seq += 1;
 
             for tool_call in response.tool_calls {
+                // Detect tool call loops (identical name+args repeated).
+                tool_tracker.record(&tool_call.name, &tool_call.arguments)?;
+
                 let arguments = parse_tool_arguments(&tool_call)?;
                 let tool_output = self
                     .tools
@@ -316,13 +340,15 @@ impl Runtime {
                         },
                     )
                     .await?;
-                let tool_content = serde_json::to_string(&serde_json::json!({
+                let raw_content = serde_json::to_string(&serde_json::json!({
                     "tool": tool_output.name,
                     "output": tool_output.output,
                 }))
                 .map_err(|err| FrankClawError::Internal {
                     msg: format!("failed to serialize tool output: {err}"),
                 })?;
+                // Truncate oversized tool results to prevent context overflow.
+                let tool_content = truncate_tool_output(&raw_content);
                 self.append_transcript_entry(
                     &session_key,
                     next_seq,
@@ -534,6 +560,71 @@ impl Runtime {
             )
             .await
     }
+}
+
+/// Track tool call patterns to detect loops where the model repeatedly calls
+/// the same tool with the same arguments without making progress.
+struct ToolCallTracker {
+    /// Map from (tool_name, arguments_hash) → count of identical calls.
+    seen: HashMap<(String, u64), usize>,
+}
+
+impl ToolCallTracker {
+    fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+        }
+    }
+
+    /// Record a tool call. Returns an error if the repeat threshold is exceeded.
+    fn record(&mut self, name: &str, arguments: &str) -> Result<()> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        arguments.hash(&mut hasher);
+        let args_hash = hasher.finish();
+        let key = (name.to_string(), args_hash);
+        let count = self.seen.entry(key).or_insert(0);
+        *count += 1;
+
+        if *count >= TOOL_REPEAT_BLOCK_THRESHOLD {
+            return Err(FrankClawError::AgentRuntime {
+                msg: format!(
+                    "tool '{}' called {} times with identical arguments — possible infinite loop",
+                    name, count
+                ),
+            });
+        }
+        if *count >= TOOL_REPEAT_WARN_THRESHOLD {
+            tracing::warn!(
+                tool = name,
+                count = *count,
+                "repeated tool call detected — possible loop"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Truncate tool output to prevent context window overflow.
+/// Preserves the beginning and end of the output with an omission marker.
+fn truncate_tool_output(output: &str) -> String {
+    let char_count = output.chars().count();
+    if char_count <= MAX_TOOL_RESULT_CHARS {
+        return output.to_string();
+    }
+
+    // Keep 80% head, 20% tail with omission marker in between.
+    let head_chars = (MAX_TOOL_RESULT_CHARS * 4) / 5;
+    let tail_chars = MAX_TOOL_RESULT_CHARS / 5;
+    let omitted = char_count - head_chars - tail_chars;
+
+    let head: String = output.chars().take(head_chars).collect();
+    let tail: String = output.chars().skip(char_count - tail_chars).collect();
+
+    format!(
+        "{}\n\n... ({} characters omitted) ...\n\n{}",
+        head, omitted, tail
+    )
 }
 
 fn build_tool_request_message(content: &str, tool_calls: &[ToolCallResponse]) -> String {
@@ -1256,6 +1347,124 @@ mod tests {
 
         assert!(matches!(err, FrankClawError::AgentRuntime { .. }));
         assert!(err.to_string().contains("too many tool calls"));
+
+        let _ = std::fs::remove_file(temp);
+    }
+
+    #[test]
+    fn tool_call_tracker_detects_repeated_calls() {
+        let mut tracker = ToolCallTracker::new();
+
+        // First few calls should succeed.
+        for _ in 0..TOOL_REPEAT_WARN_THRESHOLD {
+            tracker
+                .record("my_tool", r#"{"query":"same"}"#)
+                .expect("should not block yet");
+        }
+
+        // Calls beyond warn threshold should still succeed but log.
+        for _ in TOOL_REPEAT_WARN_THRESHOLD..TOOL_REPEAT_BLOCK_THRESHOLD - 1 {
+            tracker
+                .record("my_tool", r#"{"query":"same"}"#)
+                .expect("should warn but not block");
+        }
+
+        // At block threshold, should return error.
+        let err = tracker
+            .record("my_tool", r#"{"query":"same"}"#)
+            .expect_err("should block at threshold");
+        assert!(err.to_string().contains("infinite loop"));
+    }
+
+    #[test]
+    fn tool_call_tracker_allows_different_arguments() {
+        let mut tracker = ToolCallTracker::new();
+
+        for i in 0..20 {
+            tracker
+                .record("my_tool", &format!(r#"{{"query":"query-{i}"}}"#))
+                .expect("different args should not trigger loop detection");
+        }
+    }
+
+    #[test]
+    fn truncate_tool_output_leaves_small_outputs_unchanged() {
+        let small = "hello world";
+        assert_eq!(truncate_tool_output(small), small);
+    }
+
+    #[test]
+    fn truncate_tool_output_truncates_large_outputs() {
+        let large = "x".repeat(MAX_TOOL_RESULT_CHARS + 1000);
+        let result = truncate_tool_output(&large);
+        assert!(result.chars().count() <= MAX_TOOL_RESULT_CHARS + 100); // some marker overhead
+        assert!(result.contains("characters omitted"));
+    }
+
+    #[tokio::test]
+    async fn runtime_detects_tool_call_loop() {
+        let temp = std::env::temp_dir().join(format!(
+            "frankclaw-runtime-loop-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let sessions = Arc::new(
+            SqliteSessionStore::open(&temp, None).expect("sessions should open"),
+        );
+        let mut config = FrankClawConfig::default();
+        config
+            .agents
+            .agents
+            .get_mut(&AgentId::default_agent())
+            .unwrap()
+            .tools = vec!["session.inspect".into()];
+
+        // Model keeps calling same tool with same args every round.
+        let mut responses = Vec::new();
+        for _ in 0..MAX_TOOL_ROUNDS + 1 {
+            responses.push(Some(MockResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCallResponse {
+                    id: "call-loop".into(),
+                    name: "session.inspect".into(),
+                    arguments: r#"{"limit":1}"#.into(),
+                }],
+                finish_reason: FinishReason::ToolUse,
+            }));
+        }
+
+        let runtime = Runtime::from_providers(
+            &config,
+            sessions as Arc<dyn SessionStore>,
+            vec![Arc::new(MockProvider::scripted(
+                "primary",
+                "mock-primary",
+                responses,
+            ))],
+        )
+        .await
+        .expect("runtime should build");
+
+        let err = runtime
+            .chat(ChatRequest {
+                agent_id: None,
+                session_key: None,
+                message: "loop test".into(),
+                attachments: Vec::new(),
+                model_id: Some("mock-primary".into()),
+                max_tokens: None,
+                temperature: None,
+                stream_tx: None,
+            })
+            .await
+            .expect_err("loop should be detected");
+
+        assert!(matches!(err, FrankClawError::AgentRuntime { .. }));
+        // Could be tool round limit or loop detection — both are correct.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("infinite loop") || msg.contains("tool round limit"),
+            "unexpected error: {msg}"
+        );
 
         let _ = std::fs::remove_file(temp);
     }

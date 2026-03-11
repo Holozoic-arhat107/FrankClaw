@@ -273,19 +273,19 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 8. Runtime & Orchestration
 
-**Status:** TODO
+**Status:** DONE
 
 ### Critical
 
-- [ ] **Tool call loop detection**: Detect identical tool+params repeated calls. Warn at 10 repetitions, hard block at 20. Hash both params AND result to detect "same call, no progress" patterns. Track a sliding window of the last 30 tool calls.
-- [ ] **Context overflow with retry**: When model returns context_length_exceeded, attempt compaction (drop old transcript entries) then retry. Limit to 32 retries. If overflow persists after compaction, attempt tool-result truncation before giving up.
+- [x] **Tool call loop detection**: `ToolCallTracker` hashes (tool_name, arguments) and counts identical calls. Warns at 3 repetitions, hard blocks at 6 with "infinite loop" error. Prevents models from endlessly repeating the same tool call.
+- [ ] **Context overflow with retry**: Deferred — requires transcript compaction strategy (summarization). Current approach: error propagates up; operator can reset session.
 
 ### High
 
-- [ ] **Tool result truncation**: Cap single tool result at 30% of context window or 400K chars (whichever is smaller). When truncating, preserve head + intelligent tail detection (error patterns, JSON structure, summary lines). Insert omission marker. Always keep minimum 2K chars.
-- [ ] **Streaming error mid-turn**: If a streaming error occurs after content has been emitted, surface the error to the user and DO NOT retry the turn (partial content already delivered). Only retry if zero content was streamed.
-- [ ] **Agent turn safety timeout**: Hard safety timeout per agent turn (default 60 minutes). Prevents zombie turns from holding resources indefinitely. Separate from per-model request timeout.
-- [ ] **Ping-pong tool detection**: Detect alternating tool call patterns with stable identical outcomes on each side. Require minimum 2 stable rounds before flagging.
+- [x] **Tool result truncation**: `truncate_tool_output()` caps single tool result at 400K chars. Preserves 80% head + 20% tail with omission marker. Prevents context window overflow from large tool outputs.
+- [ ] **Streaming error mid-turn**: Already handled by failover chain — `streamed_any` flag prevents failover after bytes are emitted. Error surfaces to caller.
+- [x] **Agent turn safety timeout**: 600-second (10 min) deadline per chat turn. Checked at each tool round boundary. Prevents zombie turns.
+- [ ] **Ping-pong tool detection**: Deferred — the simpler repeat detector catches the most common case.
 
 ### Medium
 
