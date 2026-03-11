@@ -56,7 +56,9 @@ impl ToolRegistry {
         registry.register(Arc::new(BrowserExtractTool::new(browser.clone())));
         registry.register(Arc::new(BrowserSnapshotTool::new(browser.clone())));
         registry.register(Arc::new(BrowserClickTool::new(browser.clone())));
-        registry.register(Arc::new(BrowserTypeTool::new(browser)));
+        registry.register(Arc::new(BrowserTypeTool::new(browser.clone())));
+        registry.register(Arc::new(BrowserSessionsTool::new(browser.clone())));
+        registry.register(Arc::new(BrowserCloseTool::new(browser)));
         registry
     }
 
@@ -247,6 +249,41 @@ impl BrowserClient {
                 msg: format!("browser session '{}' was not opened yet", session_id),
             })?;
         self.snapshot_session(&session).await
+    }
+
+    async fn list_sessions(&self) -> Vec<BrowserSession> {
+        self.sessions.lock().await.values().cloned().collect()
+    }
+
+    async fn close(&self, session_id: &str) -> Result<()> {
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: format!("browser session '{}' was not opened yet", session_id),
+            })?;
+        let endpoint = self
+            .base_url
+            .join(&format!("json/close/{}", session.target_id))
+            .map_err(|err| FrankClawError::Internal {
+                msg: format!("invalid browser close endpoint: {err}"),
+            })?;
+        let response = self
+            .http
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|err| FrankClawError::AgentRuntime {
+                msg: format!("failed to close browser target: {err}"),
+            })?;
+        if !response.status().is_success() {
+            return Err(FrankClawError::AgentRuntime {
+                msg: format!("browser close failed with HTTP {}", response.status()),
+            });
+        }
+        Ok(())
     }
 
     async fn click(&self, session_id: &str, selector: &str) -> Result<BrowserSnapshot> {
@@ -500,6 +537,12 @@ struct BrowserClickTool {
 struct BrowserTypeTool {
     client: Arc<BrowserClient>,
 }
+struct BrowserSessionsTool {
+    client: Arc<BrowserClient>,
+}
+struct BrowserCloseTool {
+    client: Arc<BrowserClient>,
+}
 
 impl BrowserOpenTool {
     fn new(client: Arc<BrowserClient>) -> Self {
@@ -526,6 +569,18 @@ impl BrowserClickTool {
 }
 
 impl BrowserTypeTool {
+    fn new(client: Arc<BrowserClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl BrowserSessionsTool {
+    fn new(client: Arc<BrowserClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl BrowserCloseTool {
     fn new(client: Arc<BrowserClient>) -> Self {
         Self { client }
     }
@@ -746,6 +801,64 @@ impl Tool for BrowserTypeTool {
             })?;
         let snapshot = self.client.type_text(&session_id, selector, text).await?;
         Ok(snapshot_result(snapshot, false, 1000))
+    }
+}
+
+#[async_trait]
+impl Tool for BrowserSessionsTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "browser.sessions".into(),
+            description: "List active Chromium-backed browser sessions tracked by FrankClaw.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    async fn invoke(&self, _args: serde_json::Value, _ctx: ToolContext) -> Result<serde_json::Value> {
+        let sessions = self
+            .client
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|session| serde_json::json!({
+                "session_id": session.session_id,
+                "target_id": session.target_id,
+                "url": session.current_url,
+                "title": session.title,
+                "last_updated_at": session.last_updated_at,
+            }))
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({ "sessions": sessions }))
+    }
+}
+
+#[async_trait]
+impl Tool for BrowserCloseTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "browser.close".into(),
+            description: "Close a Chromium-backed browser session and its DevTools target.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Optional browser session identifier. Defaults to the current chat session." }
+                }
+            }),
+        }
+    }
+
+    async fn invoke(&self, args: serde_json::Value, ctx: ToolContext) -> Result<serde_json::Value> {
+        let session_id = self
+            .client
+            .resolve_session_id(args.get("session_id").and_then(|value| value.as_str()), &ctx)?;
+        self.client.close(&session_id).await?;
+        Ok(serde_json::json!({
+            "session_id": session_id,
+            "closed": true,
+        }))
     }
 }
 
@@ -978,6 +1091,7 @@ mod tests {
         };
         let app = Router::new()
             .route("/json/new", put(mock_create_target))
+            .route("/json/close/{target_id}", get(mock_close_target))
             .route("/devtools/page/mock-page", get(mock_page_ws))
             .with_state(mock_state.clone());
         tokio::spawn(async move {
@@ -995,7 +1109,9 @@ mod tests {
         registry.register(Arc::new(BrowserExtractTool::new(client.clone())));
         registry.register(Arc::new(BrowserSnapshotTool::new(client.clone())));
         registry.register(Arc::new(BrowserClickTool::new(client.clone())));
-        registry.register(Arc::new(BrowserTypeTool::new(client)));
+        registry.register(Arc::new(BrowserTypeTool::new(client.clone())));
+        registry.register(Arc::new(BrowserSessionsTool::new(client.clone())));
+        registry.register(Arc::new(BrowserCloseTool::new(client)));
 
         let ctx = ToolContext {
             agent_id: AgentId::default_agent(),
@@ -1008,6 +1124,8 @@ mod tests {
             "browser.snapshot".into(),
             "browser.click".into(),
             "browser.type".into(),
+            "browser.sessions".into(),
+            "browser.close".into(),
         ];
 
         let opened = registry
@@ -1080,6 +1198,58 @@ mod tests {
                 .expect("text should exist")
                 .contains("Typed frankclaw")
         );
+
+        let sessions = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.sessions",
+                serde_json::json!({}),
+                ToolContext {
+                    agent_id: AgentId::default_agent(),
+                    session_key: Some(SessionKey::from_raw("default:web:browser")),
+                    sessions: Arc::new(MockSessionStore::default()),
+                },
+            )
+            .await
+            .expect("browser.sessions should succeed");
+        assert_eq!(sessions.output["sessions"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            sessions.output["sessions"][0]["session_id"],
+            serde_json::json!("session:default:web:browser")
+        );
+
+        let closed = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.close",
+                serde_json::json!({}),
+                ToolContext {
+                    agent_id: AgentId::default_agent(),
+                    session_key: Some(SessionKey::from_raw("default:web:browser")),
+                    sessions: Arc::new(MockSessionStore::default()),
+                },
+            )
+            .await
+            .expect("browser.close should succeed");
+        assert_eq!(closed.output["closed"], serde_json::json!(true));
+
+        let sessions_after_close = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.sessions",
+                serde_json::json!({}),
+                ToolContext {
+                    agent_id: AgentId::default_agent(),
+                    session_key: Some(SessionKey::from_raw("default:web:browser")),
+                    sessions: Arc::new(MockSessionStore::default()),
+                },
+            )
+            .await
+            .expect("browser.sessions should still succeed");
+        assert_eq!(
+            sessions_after_close.output["sessions"].as_array().map(Vec::len),
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -1136,6 +1306,8 @@ mod tests {
             "browser.snapshot".into(),
             "browser.click".into(),
             "browser.type".into(),
+            "browser.sessions".into(),
+            "browser.close".into(),
         ];
 
         let opened = registry
@@ -1188,7 +1360,7 @@ mod tests {
                 &allowed,
                 "browser.snapshot",
                 serde_json::json!({ "max_chars": 4096 }),
-                ctx,
+                ctx.clone(),
             )
             .await
             .expect("browser.snapshot should succeed against real chromium");
@@ -1197,6 +1369,42 @@ mod tests {
                 .as_str()
                 .expect("html should exist")
                 .contains("id=\"status\"")
+        );
+
+        let sessions = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.sessions",
+                serde_json::json!({}),
+                ctx.clone(),
+            )
+            .await
+            .expect("browser.sessions should succeed against real chromium");
+        assert_eq!(sessions.output["sessions"].as_array().map(Vec::len), Some(1));
+
+        let closed = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.close",
+                serde_json::json!({}),
+                ctx.clone(),
+            )
+            .await
+            .expect("browser.close should succeed against real chromium");
+        assert_eq!(closed.output["closed"], serde_json::json!(true));
+
+        let sessions_after_close = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.sessions",
+                serde_json::json!({}),
+                ctx,
+            )
+            .await
+            .expect("browser.sessions should still succeed against real chromium");
+        assert_eq!(
+            sessions_after_close.output["sessions"].as_array().map(Vec::len),
+            Some(0)
         );
     }
 
@@ -1218,6 +1426,13 @@ mod tests {
         State(state): State<MockBrowserState>,
     ) -> impl IntoResponse {
         ws.on_upgrade(move |socket| handle_mock_page_ws(socket, state))
+    }
+
+    async fn mock_close_target(axum::extract::Path(target_id): axum::extract::Path<String>) -> impl IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            format!("Target is closing: {target_id}"),
+        )
     }
 
     async fn handle_mock_page_ws(mut socket: WebSocket, state: MockBrowserState) {

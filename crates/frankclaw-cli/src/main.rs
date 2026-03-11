@@ -801,7 +801,13 @@ fn collect_browser_tool_warnings(
         .flat_map(|agent| agent.tools.iter())
         .any(|tool| matches!(
             tool.as_str(),
-            "browser.open" | "browser.extract" | "browser.snapshot"
+            "browser.open"
+                | "browser.extract"
+                | "browser.snapshot"
+                | "browser.click"
+                | "browser.type"
+                | "browser.sessions"
+                | "browser.close"
         ));
     if !browser_tools_enabled {
         return Vec::new();
@@ -1121,7 +1127,7 @@ mod tests {
             .agents
             .get_mut(&frankclaw_core::types::AgentId::default_agent())
             .expect("default agent should exist")
-            .tools = vec!["browser.open".into()];
+            .tools = vec!["browser.close".into()];
 
         let warnings = collect_browser_tool_warnings(&config, Some("http://10.0.0.8:6553/"));
 
