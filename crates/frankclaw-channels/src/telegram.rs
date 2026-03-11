@@ -324,6 +324,37 @@ impl ChannelPlugin for TelegramChannel {
             })
         }
     }
+
+    async fn delete_message(&self, target: &DeleteMessageTarget) -> Result<()> {
+        let body = build_delete_body(target)?;
+        let resp = self
+            .client
+            .post(self.api_url("deleteMessage"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("delete failed: {e}"),
+            })?;
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("invalid response: {e}"),
+        })?;
+
+        if data["ok"].as_bool() == Some(true) {
+            Ok(())
+        } else {
+            Err(FrankClawError::Channel {
+                channel: self.id(),
+                msg: data["description"]
+                    .as_str()
+                    .unwrap_or("unknown telegram delete error")
+                    .to_string(),
+            })
+        }
+    }
 }
 
 fn encode_thread_id(chat_id: i64, topic_id: Option<i64>) -> String {
@@ -363,6 +394,22 @@ fn build_edit_body(target: &EditMessageTarget, new_text: &str) -> Result<serde_j
         "message_id": message_id,
         "text": new_text,
         "parse_mode": "Markdown",
+    }))
+}
+
+fn build_delete_body(target: &DeleteMessageTarget) -> Result<serde_json::Value> {
+    let (chat_id, _) = parse_target_thread(target.thread_id.as_deref(), &target.to);
+    let message_id = target
+        .platform_message_id
+        .parse::<i64>()
+        .map_err(|_| FrankClawError::Channel {
+            channel: ChannelId::new("telegram"),
+            msg: "telegram delete requires a numeric platform message id".into(),
+        })?;
+
+    Ok(serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
     }))
 }
 
@@ -455,6 +502,22 @@ mod tests {
         assert_eq!(body["chat_id"], serde_json::json!("-100123"));
         assert_eq!(body["message_id"], serde_json::json!(99));
         assert_eq!(body["text"], serde_json::json!("updated"));
+    }
+
+    #[test]
+    fn build_delete_body_uses_thread_target_chat_id() {
+        let body = build_delete_body(
+            &DeleteMessageTarget {
+                account_id: "default".into(),
+                to: "42".into(),
+                thread_id: Some("-100123:topic:7".into()),
+                platform_message_id: "99".into(),
+            },
+        )
+        .expect("delete body should build");
+
+        assert_eq!(body["chat_id"], serde_json::json!("-100123"));
+        assert_eq!(body["message_id"], serde_json::json!(99));
     }
 
     #[test]

@@ -54,7 +54,7 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 
 - [ ] Rich attachment/media handling across supported channels
 - [x] Broader edit support beyond Telegram
-- [ ] Delete support where platforms allow it
+- [x] Delete support where platforms allow it
 - [ ] Channel-specific streaming or pseudo-streaming delivery
 - [ ] Better group-routing modes and reply-tag semantics
 - [ ] Better WhatsApp-specific behavior beyond normalized inbound media/webhook handling

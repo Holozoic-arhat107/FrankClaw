@@ -175,7 +175,7 @@ impl ChannelPlugin for SlackChannel {
             groups: true,
             attachments: true,
             edit: true,
-            delete: false,
+            delete: true,
             reactions: false,
             streaming: false,
             inline_buttons: false,
@@ -297,6 +297,36 @@ impl ChannelPlugin for SlackChannel {
             })
         }
     }
+
+    async fn delete_message(&self, target: &DeleteMessageTarget) -> Result<()> {
+        let resp = self
+            .client
+            .post(format!("{SLACK_API_BASE}/chat.delete"))
+            .header("authorization", self.bot_auth_header())
+            .json(&build_delete_body(target))
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("slack delete failed: {e}"),
+            })?;
+
+        let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("invalid slack delete response: {e}"),
+        })?;
+        if body["ok"].as_bool() == Some(true) {
+            Ok(())
+        } else {
+            Err(FrankClawError::Channel {
+                channel: self.id(),
+                msg: body["error"]
+                    .as_str()
+                    .unwrap_or("unknown slack delete failure")
+                    .to_string(),
+            })
+        }
+    }
 }
 
 fn parse_socket_frame(channel_id: ChannelId, frame: Message) -> Result<serde_json::Value> {
@@ -405,6 +435,14 @@ fn build_edit_body(target: &EditMessageTarget, new_text: &str) -> serde_json::Va
         "channel": channel,
         "ts": target.platform_message_id,
         "text": new_text,
+    })
+}
+
+fn build_delete_body(target: &DeleteMessageTarget) -> serde_json::Value {
+    let (channel, _) = parse_thread_target(target.thread_id.as_deref(), &target.to);
+    serde_json::json!({
+        "channel": channel,
+        "ts": target.platform_message_id,
     })
 }
 
@@ -533,5 +571,18 @@ mod tests {
         assert_eq!(body["channel"], serde_json::json!("C123"));
         assert_eq!(body["ts"], serde_json::json!("1710000000.123456"));
         assert_eq!(body["text"], serde_json::json!("updated"));
+    }
+
+    #[test]
+    fn build_delete_body_uses_channel_from_thread_target() {
+        let body = build_delete_body(&DeleteMessageTarget {
+            account_id: "default".into(),
+            to: "C123".into(),
+            thread_id: Some("C123:thread:1710000000.000001".into()),
+            platform_message_id: "1710000000.123456".into(),
+        });
+
+        assert_eq!(body["channel"], serde_json::json!("C123"));
+        assert_eq!(body["ts"], serde_json::json!("1710000000.123456"));
     }
 }

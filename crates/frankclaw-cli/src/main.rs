@@ -106,6 +106,13 @@ enum Command {
         text: String,
     },
 
+    /// Delete the last tracked assistant reply for a session.
+    MessageDeleteLast {
+        /// Session key whose last assistant reply should be deleted.
+        #[arg(long)]
+        session: String,
+    },
+
     /// List available models from configured providers.
     ModelsList,
 
@@ -510,6 +517,70 @@ async fn main() -> anyhow::Result<()> {
             sessions.upsert(&entry).await?;
 
             println!("Edited last reply for session {}.", session_key);
+        }
+
+        Command::MessageDeleteLast { session } => {
+            use frankclaw_core::channel::DeleteMessageTarget;
+            use frankclaw_core::session::SessionStore;
+
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+            let sessions = open_sessions(&state_dir)?;
+            let session_key = frankclaw_core::types::SessionKey::from_raw(session);
+            let mut entry = sessions
+                .get(&session_key)
+                .await?
+                .context("session not found")?;
+            let mut last_reply = frankclaw_gateway::delivery::last_reply_from_metadata(&entry.metadata)
+                .context("session has no tracked delivery metadata")?;
+
+            let channels = frankclaw_channels::load_from_config(&config)
+                .context("failed to load configured channels")?;
+            let channel = channels
+                .get(&entry.channel)
+                .cloned()
+                .with_context(|| format!("channel '{}' is not configured", entry.channel))?;
+
+            let targets = if last_reply.chunks.is_empty() {
+                last_reply
+                    .platform_message_id
+                    .clone()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                last_reply
+                    .chunks
+                    .iter()
+                    .filter_map(|chunk| chunk.platform_message_id.clone())
+                    .collect::<Vec<_>>()
+            };
+
+            if targets.is_empty() {
+                anyhow::bail!("tracked reply is missing platform message ids");
+            }
+
+            for platform_message_id in targets {
+                channel
+                    .delete_message(&DeleteMessageTarget {
+                        account_id: last_reply.account_id.clone(),
+                        to: last_reply.recipient_id.clone(),
+                        thread_id: last_reply.thread_id.clone(),
+                        platform_message_id,
+                    })
+                    .await?;
+            }
+
+            last_reply.status = "deleted".into();
+            last_reply.platform_message_id = None;
+            for chunk in &mut last_reply.chunks {
+                chunk.status = "deleted".into();
+                chunk.platform_message_id = None;
+            }
+            frankclaw_gateway::delivery::set_last_reply_in_metadata(&mut entry.metadata, &last_reply)
+                .context("failed to update delivery metadata")?;
+            sessions.upsert(&entry).await?;
+
+            println!("Deleted last reply for session {}.", session_key);
         }
 
         Command::ModelsList => {

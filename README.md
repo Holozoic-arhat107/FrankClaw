@@ -282,6 +282,7 @@ frankclaw config          Show resolved configuration (secrets redacted)
 frankclaw tools list      Show tools allowed for an agent
 frankclaw tools invoke    Invoke a configured tool locally
 frankclaw tools activity  Show recent tool activity for a session
+frankclaw message-delete-last  Delete the last tracked reply for a session
 ```
 
 ### Global Options

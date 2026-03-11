@@ -205,7 +205,7 @@ impl ChannelPlugin for DiscordChannel {
             groups: true,
             attachments: true,
             edit: true,
-            delete: false,
+            delete: true,
             reactions: false,
             streaming: false,
             inline_buttons: false,
@@ -329,6 +329,39 @@ impl ChannelPlugin for DiscordChannel {
                 msg: body["message"]
                     .as_str()
                     .unwrap_or("unknown discord edit failure")
+                    .to_string(),
+            })
+        }
+    }
+
+    async fn delete_message(&self, target: &DeleteMessageTarget) -> Result<()> {
+        let channel_id = target.thread_id.as_deref().unwrap_or(&target.to);
+        let resp = self
+            .client
+            .delete(format!(
+                "{DISCORD_API_BASE}/channels/{channel_id}/messages/{}",
+                target.platform_message_id
+            ))
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("discord delete failed: {e}"),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("invalid discord delete response: {e}"),
+            })?;
+            Err(FrankClawError::Channel {
+                channel: self.id(),
+                msg: body["message"]
+                    .as_str()
+                    .unwrap_or("unknown discord delete failure")
                     .to_string(),
             })
         }
@@ -564,6 +597,18 @@ mod tests {
 
         assert_eq!(channel_id, "thread-9");
         assert_eq!(body["content"], serde_json::json!("updated"));
+    }
+
+    #[test]
+    fn delete_uses_thread_target_channel() {
+        let target = DeleteMessageTarget {
+            account_id: "default".into(),
+            to: "chan-1".into(),
+            thread_id: Some("thread-9".into()),
+            platform_message_id: "msg-99".into(),
+        };
+
+        assert_eq!(target.thread_id.as_deref().unwrap_or(&target.to), "thread-9");
     }
 
     #[test]

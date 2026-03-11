@@ -109,6 +109,15 @@ pub struct EditMessageTarget {
     pub platform_message_id: String,
 }
 
+/// Context required to delete an already-sent platform message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteMessageTarget {
+    pub account_id: String,
+    pub to: String,
+    pub thread_id: Option<String>,
+    pub platform_message_id: String,
+}
+
 /// Streaming handle for incremental message delivery.
 pub struct StreamHandle {
     pub channel: ChannelId,
@@ -162,7 +171,7 @@ pub trait ChannelPlugin: Send + Sync + 'static {
     }
 
     /// Delete a previously sent message (if supported).
-    async fn delete_message(&self, _platform_message_id: &str) -> Result<()> {
+    async fn delete_message(&self, _target: &DeleteMessageTarget) -> Result<()> {
         Err(crate::error::FrankClawError::Channel {
             channel: self.id(),
             msg: "delete not supported".into(),
