@@ -55,6 +55,13 @@ enum Command {
     /// Show resolved configuration (secrets redacted).
     Config,
 
+    /// Print a supported channel config example.
+    ConfigExample {
+        /// Channel example to print: web, telegram, discord, slack, signal, whatsapp.
+        #[arg(long)]
+        channel: String,
+    },
+
     /// Show runtime and exposure status for the configured gateway.
     Status,
 
@@ -330,6 +337,15 @@ async fn main() -> anyhow::Result<()> {
             let config = load_config(cli.config.as_deref(), &state_dir)?;
             let json = serde_json::to_string_pretty(&redact_config(&config))?;
             println!("{json}");
+        }
+
+        Command::ConfigExample { channel } => {
+            let example = supported_channel_example(&channel)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "unsupported channel example '{}'; expected web, telegram, discord, slack, signal, or whatsapp",
+                    channel
+                ))?;
+            println!("{example}");
         }
 
         Command::Status => {
@@ -1151,6 +1167,18 @@ fn build_onboard_config(
     Ok(config)
 }
 
+fn supported_channel_example(channel: &str) -> Option<&'static str> {
+    match channel.trim() {
+        "web" => Some(include_str!("../../../examples/channels/web.json")),
+        "telegram" => Some(include_str!("../../../examples/channels/telegram.json")),
+        "discord" => Some(include_str!("../../../examples/channels/discord.json")),
+        "slack" => Some(include_str!("../../../examples/channels/slack.json")),
+        "signal" => Some(include_str!("../../../examples/channels/signal.json")),
+        "whatsapp" => Some(include_str!("../../../examples/channels/whatsapp.json")),
+        _ => None,
+    }
+}
+
 fn render_systemd_unit(
     executable: &std::path::Path,
     config_path: &std::path::Path,
@@ -1374,6 +1402,28 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&content)
                 .unwrap_or_else(|err| panic!("invalid JSON in {}: {}", path.display(), err));
         }
+    }
+
+    #[test]
+    fn supported_channel_example_returns_embedded_snippet() {
+        let example = supported_channel_example("telegram")
+            .expect("telegram example should exist");
+
+        assert!(example.contains("TELEGRAM_BOT_TOKEN"));
+        assert!(supported_channel_example("matrix").is_none());
+    }
+
+    #[test]
+    fn docker_compose_template_includes_gateway_and_browser_services() {
+        let compose_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docker-compose.yml");
+        let content = std::fs::read_to_string(&compose_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {}", compose_path.display(), err));
+
+        assert!(content.contains("gateway:"));
+        assert!(content.contains("chromium:"));
+        assert!(content.contains("FRANKCLAW_BROWSER_DEVTOOLS_URL: http://chromium:9222/"));
+        assert!(content.contains("./frankclaw.json:/config/frankclaw.json:ro"));
     }
 
     #[test]

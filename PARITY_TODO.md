@@ -85,11 +85,11 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 ### Operator / Install
 
 - [x] Docker support and documented container flow
-- [ ] Easier channel setup flows
+- [x] Easier channel setup flows
 - [x] Better channel/provider setup verification in `doctor`
 - [x] Better deployment docs and examples
 - [x] Config examples per supported channel
-- [ ] Service/install guidance beyond `systemd` output
+- [x] Service/install guidance beyond `systemd` output
 
 ### Test Coverage and Test Quality
 

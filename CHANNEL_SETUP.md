@@ -2,7 +2,7 @@
 
 This file is the practical setup companion to `README.md`.
 It focuses on supported surfaces only: current channels, model providers, and the Chromium browser runtime.
-Ready-to-merge snippets also live under `examples/channels/`.
+Ready-to-merge snippets also live under `examples/channels/`, and `frankclaw config-example --channel <name>` prints the same embedded templates.
 
 ## Baseline
 
@@ -10,6 +10,12 @@ Start from a secure profile:
 
 ```bash
 frankclaw onboard --channel web
+```
+
+To print a supported channel snippet for an existing config:
+
+```bash
+frankclaw config-example --channel telegram
 ```
 
 Then validate before first launch:
@@ -227,9 +233,15 @@ Browser tools need a DevTools endpoint. Keep it loopback-only.
 ### Docker Compose
 
 ```bash
-docker compose up -d chromium
+cp examples/channels/web.json frankclaw.json
+docker compose up -d gateway chromium
 export FRANKCLAW_BROWSER_DEVTOOLS_URL="http://127.0.0.1:9222/"
 ```
+
+The `gateway` service expects:
+- `./frankclaw.json` with your real config
+- `./state/` for sessions and pairing state
+- provider and channel env vars in the shell or an `.env` file Compose can read
 
 ### Local Chromium
 

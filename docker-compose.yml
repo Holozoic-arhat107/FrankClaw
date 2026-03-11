@@ -1,4 +1,21 @@
 services:
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/frankclaw/Dockerfile
+    container_name: frankclaw-gateway
+    depends_on:
+      - chromium
+    environment:
+      FRANKCLAW_CONFIG: /config/frankclaw.json
+      FRANKCLAW_STATE_DIR: /var/lib/frankclaw
+      FRANKCLAW_BROWSER_DEVTOOLS_URL: http://chromium:9222/
+    ports:
+      - "127.0.0.1:18789:18789"
+    volumes:
+      - ./frankclaw.json:/config/frankclaw.json:ro
+      - ./state:/var/lib/frankclaw
+    restart: unless-stopped
   chromium:
     build:
       context: .

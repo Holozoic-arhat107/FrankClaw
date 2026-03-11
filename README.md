@@ -11,7 +11,7 @@ Current scope and parity status:
 - operator onboarding and install helpers
 
 For the remaining distance to OpenClaw feature parity, see [PARITY_TODO.md](PARITY_TODO.md) and [FEATURE_PLANS.md](FEATURE_PLANS.md).
-For concrete setup snippets for the supported channels and browser runtime, see [CHANNEL_SETUP.md](CHANNEL_SETUP.md) and `examples/channels/`.
+For concrete setup snippets for the supported channels and browser runtime, see [CHANNEL_SETUP.md](CHANNEL_SETUP.md), `examples/channels/`, or `frankclaw config-example --channel <name>`.
 
 ## Features
 
@@ -22,7 +22,7 @@ For concrete setup snippets for the supported channels and browser runtime, see 
 - **Canvas host** — local authenticated visual workspace surface
 - **Bounded tools** — session inspection plus Chromium-backed `browser.open`, `browser.extract`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.wait`, `browser.press`, `browser.sessions`, and `browser.close`
 - **Operator support** — doctor, status, remote exposure checks, onboarding, and systemd unit generation
-- **Docker browser runtime** — `docker compose up chromium` starts a local DevTools endpoint for browser tools
+- **Docker runtime** — `docker compose up gateway chromium` starts the gateway plus a local DevTools endpoint for browser tools
 - **Media pipeline** — File handling with SSRF protection and filename sanitization
 - **Plugin system** — Trait-based channel and provider adapters
 - **Zero unsafe code** — `#![forbid(unsafe_code)]` on every crate
@@ -207,7 +207,8 @@ chromium \
 ### Docker Compose Mode
 
 ```bash
-docker compose up -d chromium
+cp examples/channels/web.json frankclaw.json
+docker compose up -d gateway chromium
 ```
 
 This starts a local Chromium container exposing DevTools on `127.0.0.1:9222`.
@@ -275,6 +276,7 @@ frankclaw onboard         Create a starter config for a supported channel profil
 frankclaw init            Create a blank config with secure defaults
 frankclaw check           Validate config file
 frankclaw doctor          Run high-signal validation and readiness checks
+frankclaw config-example  Print a supported channel config snippet
 frankclaw status          Show runtime and exposure status
 frankclaw remote-status   Show remote exposure posture
 frankclaw install-systemd Print a systemd unit for the current install
