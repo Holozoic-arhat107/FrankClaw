@@ -24,19 +24,19 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 1. Telegram Channel
 
-**Status:** TODO
+**Status:** IN PROGRESS
 
 ### Critical
 
 - [ ] **Non-idempotent send retry safety**: Only retry pre-connect errors (ECONNREFUSED, ENOTFOUND, ENETUNREACH). Post-connect errors (socket timeout after partial send) risk duplicate messages. FrankClaw must classify network errors before retrying sends.
 - [ ] **401 circuit breaker on sendChatAction**: Track consecutive 401s per-account (not per-chat). After threshold (e.g. 10), suspend all sendChatAction calls with exponential backoff. Without this, a bad bot token triggers rapid 401s and Telegram may delete the bot.
-- [ ] **Caption length limit (1024 chars)**: Telegram captions are capped at 1024 characters. If text exceeds this, send media without caption, then send text as a follow-up message. Current implementation may silently truncate.
+- [x] **Caption length limit (1024 chars)**: Telegram captions are capped at 1024 characters. If text exceeds this, send media without caption, then send text as a follow-up message. Current implementation may silently truncate.
 
 ### High
 
-- [ ] **HTML parse error fallback**: When sending with `parse_mode: "HTML"`, if Telegram returns "can't parse entities", retry as plain text. Without this, messages with user-generated markdown that produces invalid HTML get dropped entirely.
-- [ ] **Thread-not-found DM fallback**: When sending to a DM with `message_thread_id`, if Telegram returns "message thread not found", retry WITHOUT the thread ID (but only for DMs, never for forum groups). DMs can have optional topics; this fallback is legitimate.
-- [ ] **Message-not-modified idempotency**: When editing a message to the same text, Telegram returns 400 "message is not modified". Treat this as success, not an error. Suppresses log spam on retries.
+- [x] **HTML parse error fallback**: When sending with `parse_mode: "Markdown"`, if Telegram returns "can't parse entities", retry as plain text. Without this, messages with user-generated markdown that produces invalid formatting get dropped entirely.
+- [x] **Thread-not-found DM fallback**: When sending to a DM with `message_thread_id`, if Telegram returns "message thread not found", retry WITHOUT the thread ID (but only for DMs, never for forum groups). DMs can have optional topics; this fallback is legitimate.
+- [x] **Message-not-modified idempotency**: When editing a message to the same text, Telegram returns 400 "message is not modified". Treat this as success, not an error. Suppresses log spam on retries.
 - [ ] **20MB file download limit**: Telegram Bot API can only download files up to 20MB via `getFile()`. Detect "file is too big" errors and do NOT retry — return a placeholder instead of crashing.
 - [ ] **Media group 500ms buffer**: Telegram sends multi-media albums as separate updates with the same `media_group_id`. Buffer for ~500ms to coalesce them into a single inbound event. Without this, a 4-photo album arrives as 4 separate messages.
 

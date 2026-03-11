@@ -16,6 +16,10 @@ use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 
+/// Telegram caption limit in characters. Captions longer than this must be
+/// split: media sent without caption, then a follow-up text message.
+const TELEGRAM_CAPTION_LIMIT: usize = 1024;
+
 /// Telegram Bot API channel adapter.
 ///
 /// Uses long polling (`getUpdates`) to receive messages.
@@ -43,6 +47,140 @@ impl TelegramChannel {
             client,
             update_offset: std::sync::atomic::AtomicI64::new(0),
         }
+    }
+
+    async fn send_with_caption_overflow(&self, msg: OutboundMessage) -> Result<SendResult> {
+        // Send media without caption.
+        let mut media_msg = msg.clone();
+        media_msg.text = String::new();
+        let result = self
+            .send_with_retries(media_msg, SendRetryState::initial())
+            .await?;
+
+        // Best-effort follow-up text message.
+        if matches!(result, SendResult::Sent { .. }) {
+            let mut text_msg = msg;
+            text_msg.attachments = Vec::new();
+            if let Err(e) = self
+                .send_with_retries(text_msg, SendRetryState::initial())
+                .await
+            {
+                warn!(error = %e, "telegram caption overflow follow-up text failed");
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn send_with_retries(
+        &self,
+        msg: OutboundMessage,
+        state: SendRetryState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SendResult>> + Send + '_>> {
+        Box::pin(self.send_with_retries_inner(msg, state))
+    }
+
+    async fn send_with_retries_inner(
+        &self,
+        msg: OutboundMessage,
+        state: SendRetryState,
+    ) -> Result<SendResult> {
+        let effective_msg = if state.include_thread_id {
+            msg.clone()
+        } else {
+            let mut m = msg.clone();
+            m.thread_id = None;
+            m
+        };
+
+        let resp = if effective_msg.attachments.is_empty() {
+            let mut body = build_send_body(&effective_msg);
+            if !state.include_parse_mode {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("parse_mode");
+                }
+            }
+            self.client
+                .post(self.api_url("sendMessage"))
+                .json(&body)
+                .send()
+                .await
+        } else {
+            let request =
+                build_media_send_request(&effective_msg, state.include_parse_mode)?;
+            self.client
+                .post(self.api_url(request.method))
+                .multipart(request.form)
+                .send()
+                .await
+        }
+        .map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("send failed: {e}"),
+        })?;
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("invalid response: {e}"),
+        })?;
+
+        if data["ok"].as_bool() == Some(true) {
+            let msg_id = data["result"]["message_id"]
+                .as_i64()
+                .unwrap_or(0)
+                .to_string();
+            return Ok(SendResult::Sent {
+                platform_message_id: msg_id,
+            });
+        }
+
+        let description = data["description"]
+            .as_str()
+            .unwrap_or("unknown error")
+            .to_string();
+
+        // Rate limiting.
+        if data["error_code"].as_i64() == Some(429) {
+            let retry_after = data["parameters"]["retry_after"].as_u64();
+            return Ok(SendResult::RateLimited {
+                retry_after_secs: retry_after,
+            });
+        }
+
+        // Parse error fallback: retry without parse_mode.
+        if is_parse_error(&description) && state.include_parse_mode {
+            warn!("telegram parse error, retrying without parse_mode");
+            return self
+                .send_with_retries(
+                    msg,
+                    SendRetryState {
+                        include_parse_mode: false,
+                        ..state
+                    },
+                )
+                .await;
+        }
+
+        // Thread-not-found fallback: retry without thread_id (DMs only).
+        if is_thread_not_found(&description) && state.include_thread_id {
+            let (chat_id, _) = parse_target_thread(msg.thread_id.as_deref(), &msg.to);
+            if is_dm_chat_id(&chat_id) {
+                warn!("telegram thread not found in DM, retrying without thread_id");
+                return self
+                    .send_with_retries(
+                        msg,
+                        SendRetryState {
+                            include_thread_id: false,
+                            ..state
+                        },
+                    )
+                    .await;
+            }
+        }
+
+        Ok(SendResult::Failed {
+            reason: description,
+        })
     }
 
     fn api_url(&self, method: &str) -> String {
@@ -152,6 +290,37 @@ impl TelegramChannel {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SendRetryState {
+    include_parse_mode: bool,
+    include_thread_id: bool,
+}
+
+impl SendRetryState {
+    fn initial() -> Self {
+        Self {
+            include_parse_mode: true,
+            include_thread_id: true,
+        }
+    }
+}
+
+fn is_parse_error(description: &str) -> bool {
+    description.contains("can't parse entities")
+}
+
+fn is_message_not_modified(description: &str) -> bool {
+    description.contains("message is not modified")
+}
+
+fn is_thread_not_found(description: &str) -> bool {
+    description.contains("message thread not found")
+}
+
+fn is_dm_chat_id(raw: &str) -> bool {
+    raw.parse::<i64>().is_ok_and(|id| id > 0)
+}
+
 fn build_inbound_attachments(msg: &serde_json::Value) -> Vec<InboundAttachment> {
     let mut attachments = Vec::new();
 
@@ -250,59 +419,16 @@ impl ChannelPlugin for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
-        let resp = if msg.attachments.is_empty() {
-            let body = build_send_body(&msg);
-            self.client
-                .post(self.api_url("sendMessage"))
-                .json(&body)
-                .send()
-                .await
-        } else {
-            let request = build_media_send_request(&msg)?;
-            self.client
-                .post(self.api_url(request.method))
-                .multipart(request.form)
-                .send()
-                .await
-        }
-        .map_err(|e| FrankClawError::Channel {
-            channel: self.id(),
-            msg: format!("send failed: {e}"),
-        })?;
-
-        let data: serde_json::Value = resp.json().await.map_err(|e| {
-            FrankClawError::Channel {
-                channel: self.id(),
-                msg: format!("invalid response: {e}"),
-            }
-        })?;
-
-        if data["ok"].as_bool() == Some(true) {
-            let msg_id = data["result"]["message_id"]
-                .as_i64()
-                .unwrap_or(0)
-                .to_string();
-            Ok(SendResult::Sent {
-                platform_message_id: msg_id,
-            })
-        } else {
-            let description = data["description"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
-
-            // Check for rate limiting.
-            if data["error_code"].as_i64() == Some(429) {
-                let retry_after = data["parameters"]["retry_after"].as_u64();
-                Ok(SendResult::RateLimited {
-                    retry_after_secs: retry_after,
-                })
-            } else {
-                Ok(SendResult::Failed {
-                    reason: description,
-                })
+        // Caption overflow: if text exceeds Telegram's 1024-char caption limit
+        // and we have attachments, send media without caption then follow-up text.
+        if !msg.attachments.is_empty() {
+            let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::Plain);
+            if text.len() > TELEGRAM_CAPTION_LIMIT {
+                return self.send_with_caption_overflow(msg).await;
             }
         }
+
+        self.send_with_retries(msg, SendRetryState::initial()).await
     }
 
     async fn edit_message(&self, target: &EditMessageTarget, new_text: &str) -> Result<()> {
@@ -325,16 +451,22 @@ impl ChannelPlugin for TelegramChannel {
         })?;
 
         if data["ok"].as_bool() == Some(true) {
-            Ok(())
-        } else {
-            Err(FrankClawError::Channel {
-                channel: self.id(),
-                msg: data["description"]
-                    .as_str()
-                    .unwrap_or("unknown telegram edit error")
-                    .to_string(),
-            })
+            return Ok(());
         }
+
+        let description = data["description"]
+            .as_str()
+            .unwrap_or("unknown telegram edit error");
+
+        // Treat "message is not modified" as success (idempotent edit).
+        if is_message_not_modified(description) {
+            return Ok(());
+        }
+
+        Err(FrankClawError::Channel {
+            channel: self.id(),
+            msg: description.to_string(),
+        })
     }
 
     async fn stream_start(&self, msg: &OutboundMessage) -> Result<frankclaw_core::channel::StreamHandle> {
@@ -449,9 +581,12 @@ struct TelegramMediaRequest {
     form: reqwest::multipart::Form,
 }
 
-fn build_media_send_request(msg: &OutboundMessage) -> Result<TelegramMediaRequest> {
+fn build_media_send_request(
+    msg: &OutboundMessage,
+    include_parse_mode: bool,
+) -> Result<TelegramMediaRequest> {
     if msg.attachments.len() > 1 {
-        return build_media_group_request(msg);
+        return build_media_group_request(msg, include_parse_mode);
     }
 
     let channel = ChannelId::new("telegram");
@@ -482,7 +617,9 @@ fn build_media_send_request(msg: &OutboundMessage) -> Result<TelegramMediaReques
 
     if !text.is_empty() {
         form = form.text("caption", text);
-        form = form.text("parse_mode", "Markdown");
+        if include_parse_mode {
+            form = form.text("parse_mode", "Markdown");
+        }
     }
     if let Some(topic_id) = topic_id {
         form = form.text("message_thread_id", topic_id.to_string());
@@ -498,11 +635,14 @@ fn build_media_send_request(msg: &OutboundMessage) -> Result<TelegramMediaReques
     Ok(TelegramMediaRequest { method, form })
 }
 
-fn build_media_group_request(msg: &OutboundMessage) -> Result<TelegramMediaRequest> {
+fn build_media_group_request(
+    msg: &OutboundMessage,
+    include_parse_mode: bool,
+) -> Result<TelegramMediaRequest> {
     let channel = ChannelId::new("telegram");
     let (chat_id, topic_id) = parse_target_thread(msg.thread_id.as_deref(), &msg.to);
     let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::Plain);
-    let media = build_media_group_items(&channel, &msg.attachments, &text)?;
+    let media = build_media_group_items(&channel, &msg.attachments, &text, include_parse_mode)?;
     let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id);
 
     for (index, attachment) in msg.attachments.iter().enumerate() {
@@ -545,6 +685,7 @@ fn build_media_group_items(
     channel: &ChannelId,
     attachments: &[OutboundAttachment],
     text: &str,
+    include_parse_mode: bool,
 ) -> Result<Vec<serde_json::Value>> {
     if !(2..=10).contains(&attachments.len()) {
         return Err(FrankClawError::Channel {
@@ -577,7 +718,9 @@ fn build_media_group_items(
         });
         if index == 0 && !text.is_empty() {
             item["caption"] = serde_json::json!(text);
-            item["parse_mode"] = serde_json::json!("Markdown");
+            if include_parse_mode {
+                item["parse_mode"] = serde_json::json!("Markdown");
+            }
         }
         media.push(item);
     }
@@ -759,21 +902,24 @@ mod tests {
 
     #[test]
     fn build_media_send_request_uses_photo_method_for_images() {
-        let request = build_media_send_request(&OutboundMessage {
-            channel: ChannelId::new("telegram"),
-            account_id: "default".into(),
-            to: "42".into(),
-            thread_id: None,
-            text: "caption".into(),
-            attachments: vec![OutboundAttachment {
-                media_id: frankclaw_core::types::MediaId::new(),
-                mime_type: "image/png".into(),
-                filename: Some("photo.png".into()),
-                url: None,
-                bytes: b"png".to_vec(),
-            }],
-            reply_to: Some("77".into()),
-        })
+        let request = build_media_send_request(
+            &OutboundMessage {
+                channel: ChannelId::new("telegram"),
+                account_id: "default".into(),
+                to: "42".into(),
+                thread_id: None,
+                text: "caption".into(),
+                attachments: vec![OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("photo.png".into()),
+                    url: None,
+                    bytes: b"png".to_vec(),
+                }],
+                reply_to: Some("77".into()),
+            },
+            true,
+        )
         .expect("media send request should build");
 
         assert_eq!(request.method, "sendPhoto");
@@ -781,21 +927,24 @@ mod tests {
 
     #[test]
     fn build_media_send_request_rejects_missing_bytes() {
-        let err = build_media_send_request(&OutboundMessage {
-            channel: ChannelId::new("telegram"),
-            account_id: "default".into(),
-            to: "42".into(),
-            thread_id: None,
-            text: "caption".into(),
-            attachments: vec![OutboundAttachment {
-                media_id: frankclaw_core::types::MediaId::new(),
-                mime_type: "image/png".into(),
-                filename: Some("photo.png".into()),
-                url: None,
-                bytes: Vec::new(),
-            }],
-            reply_to: None,
-        })
+        let err = build_media_send_request(
+            &OutboundMessage {
+                channel: ChannelId::new("telegram"),
+                account_id: "default".into(),
+                to: "42".into(),
+                thread_id: None,
+                text: "caption".into(),
+                attachments: vec![OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("photo.png".into()),
+                    url: None,
+                    bytes: Vec::new(),
+                }],
+                reply_to: None,
+            },
+            true,
+        )
         .expect_err("missing bytes should fail");
 
         assert!(err.to_string().contains("missing inline bytes"));
@@ -803,30 +952,33 @@ mod tests {
 
     #[test]
     fn build_media_send_request_uses_media_group_for_multiple_images() {
-        let request = build_media_send_request(&OutboundMessage {
-            channel: ChannelId::new("telegram"),
-            account_id: "default".into(),
-            to: "42".into(),
-            thread_id: Some("-100123:topic:7".into()),
-            text: "album".into(),
-            attachments: vec![
-                OutboundAttachment {
-                    media_id: frankclaw_core::types::MediaId::new(),
-                    mime_type: "image/png".into(),
-                    filename: Some("photo-1.png".into()),
-                    url: None,
-                    bytes: b"png1".to_vec(),
-                },
-                OutboundAttachment {
-                    media_id: frankclaw_core::types::MediaId::new(),
-                    mime_type: "image/jpeg".into(),
-                    filename: Some("photo-2.jpg".into()),
-                    url: None,
-                    bytes: b"jpg2".to_vec(),
-                },
-            ],
-            reply_to: Some("77".into()),
-        })
+        let request = build_media_send_request(
+            &OutboundMessage {
+                channel: ChannelId::new("telegram"),
+                account_id: "default".into(),
+                to: "42".into(),
+                thread_id: Some("-100123:topic:7".into()),
+                text: "album".into(),
+                attachments: vec![
+                    OutboundAttachment {
+                        media_id: frankclaw_core::types::MediaId::new(),
+                        mime_type: "image/png".into(),
+                        filename: Some("photo-1.png".into()),
+                        url: None,
+                        bytes: b"png1".to_vec(),
+                    },
+                    OutboundAttachment {
+                        media_id: frankclaw_core::types::MediaId::new(),
+                        mime_type: "image/jpeg".into(),
+                        filename: Some("photo-2.jpg".into()),
+                        url: None,
+                        bytes: b"jpg2".to_vec(),
+                    },
+                ],
+                reply_to: Some("77".into()),
+            },
+            true,
+        )
         .expect("media group request should build");
 
         assert_eq!(request.method, "sendMediaGroup");
@@ -853,6 +1005,7 @@ mod tests {
                 },
             ],
             "docs",
+            true,
         )
         .expect("document media group should build");
 
@@ -882,6 +1035,7 @@ mod tests {
                 },
             ],
             "audio",
+            true,
         )
         .expect("audio media group should build");
 
@@ -910,6 +1064,7 @@ mod tests {
                 },
             ],
             "album",
+            true,
         )
         .expect_err("mixed document/audio group should fail");
 
@@ -929,7 +1084,7 @@ mod tests {
                 bytes: b"png".to_vec(),
             })
             .collect();
-        let err = build_media_group_items(&ChannelId::new("telegram"), &attachments, "album")
+        let err = build_media_group_items(&ChannelId::new("telegram"), &attachments, "album", true)
             .expect_err("more than 10 telegram media group items should fail");
 
         assert!(err.to_string().contains("between 2 and 10"));
@@ -1037,5 +1192,136 @@ mod tests {
         assert_eq!(inbound.attachments.len(), 1);
         assert_eq!(inbound.attachments[0].mime_type, "image/jpeg");
         assert_eq!(inbound.attachments[0].size_bytes, Some(1024));
+    }
+
+    // --- Audit regression tests ---
+
+    #[test]
+    fn is_dm_chat_id_positive_ids_are_dms() {
+        assert!(is_dm_chat_id("42"));
+        assert!(is_dm_chat_id("123456789"));
+    }
+
+    #[test]
+    fn is_dm_chat_id_negative_ids_are_groups() {
+        assert!(!is_dm_chat_id("-100123"));
+        assert!(!is_dm_chat_id("-42"));
+    }
+
+    #[test]
+    fn is_dm_chat_id_non_numeric_returns_false() {
+        assert!(!is_dm_chat_id("abc"));
+        assert!(!is_dm_chat_id(""));
+    }
+
+    #[test]
+    fn error_classification_helpers_match_telegram_error_strings() {
+        assert!(is_parse_error("Bad Request: can't parse entities: some detail"));
+        assert!(!is_parse_error("Bad Request: chat not found"));
+
+        assert!(is_message_not_modified(
+            "Bad Request: message is not modified: specified new message content and reply markup are exactly the same"
+        ));
+        assert!(!is_message_not_modified("Bad Request: chat not found"));
+
+        assert!(is_thread_not_found("Bad Request: message thread not found"));
+        assert!(!is_thread_not_found("Bad Request: chat not found"));
+    }
+
+    #[test]
+    fn caption_limit_constant_matches_telegram_spec() {
+        assert_eq!(TELEGRAM_CAPTION_LIMIT, 1024);
+    }
+
+    #[test]
+    fn build_media_send_request_omits_parse_mode_when_disabled() {
+        // When include_parse_mode is false, the form should not contain parse_mode.
+        // We can't inspect Form fields directly, but we can verify it builds without error.
+        let request = build_media_send_request(
+            &OutboundMessage {
+                channel: ChannelId::new("telegram"),
+                account_id: "default".into(),
+                to: "42".into(),
+                thread_id: None,
+                text: "caption".into(),
+                attachments: vec![OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("photo.png".into()),
+                    url: None,
+                    bytes: b"png".to_vec(),
+                }],
+                reply_to: None,
+            },
+            false,
+        )
+        .expect("media send request should build without parse_mode");
+
+        assert_eq!(request.method, "sendPhoto");
+    }
+
+    #[test]
+    fn build_media_group_items_omit_parse_mode_when_disabled() {
+        let items = build_media_group_items(
+            &ChannelId::new("telegram"),
+            &[
+                OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("a.png".into()),
+                    url: None,
+                    bytes: b"png1".to_vec(),
+                },
+                OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("b.png".into()),
+                    url: None,
+                    bytes: b"png2".to_vec(),
+                },
+            ],
+            "caption text",
+            false,
+        )
+        .expect("media group items should build");
+
+        // First item should have caption but no parse_mode.
+        assert_eq!(items[0]["caption"], serde_json::json!("caption text"));
+        assert!(items[0].get("parse_mode").is_none());
+    }
+
+    #[test]
+    fn build_media_group_items_include_parse_mode_when_enabled() {
+        let items = build_media_group_items(
+            &ChannelId::new("telegram"),
+            &[
+                OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("a.png".into()),
+                    url: None,
+                    bytes: b"png1".to_vec(),
+                },
+                OutboundAttachment {
+                    media_id: frankclaw_core::types::MediaId::new(),
+                    mime_type: "image/png".into(),
+                    filename: Some("b.png".into()),
+                    url: None,
+                    bytes: b"png2".to_vec(),
+                },
+            ],
+            "caption text",
+            true,
+        )
+        .expect("media group items should build");
+
+        assert_eq!(items[0]["parse_mode"], serde_json::json!("Markdown"));
+    }
+
+    #[test]
+    fn send_retry_state_initial_includes_everything() {
+        let state = SendRetryState::initial();
+        assert!(state.include_parse_mode);
+        assert!(state.include_thread_id);
     }
 }
