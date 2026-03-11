@@ -50,6 +50,7 @@ pub async fn run(
     let bind_addr = resolve_bind_addr(&config.gateway.bind, config.gateway.port);
     let channels = Arc::new(frankclaw_channels::load_from_config(&config)?);
     let state = GatewayState::new(config, sessions, runtime, channels, pairing);
+    log_loaded_skills(&state);
     start_channel_runtime(state.clone());
     start_session_maintenance(state.clone());
     start_cron_runtime(state.clone(), cron).await?;
@@ -757,6 +758,27 @@ async fn process_inbound_message(
     }
 
     Ok(())
+}
+
+fn log_loaded_skills(state: &Arc<GatewayState>) {
+    let config = state.current_config();
+    for agent_id in config.agents.agents.keys() {
+        let Ok(skills) = state.runtime.list_skills(Some(agent_id)) else {
+            continue;
+        };
+        for skill in skills {
+            log_event(
+                "skill.enable",
+                "loaded",
+                serde_json::json!({
+                    "agent_id": agent_id.as_str(),
+                    "skill_id": skill.id,
+                    "tools": skill.tools.clone(),
+                    "capabilities": skill.capabilities.clone(),
+                }),
+            );
+        }
+    }
 }
 
 async fn persist_delivery_metadata(

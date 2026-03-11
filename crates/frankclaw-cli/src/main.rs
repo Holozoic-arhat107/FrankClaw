@@ -455,6 +455,16 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(description) = &skill.description {
                     println!("  {}", description);
                 }
+                if !skill.capabilities.is_empty() {
+                    println!(
+                        "  capabilities: {}",
+                        skill.capabilities
+                            .iter()
+                            .map(display_skill_capability)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
                 if !skill.tools.is_empty() {
                     println!("  tools: {}", skill.tools.join(", "));
                 }
@@ -605,6 +615,15 @@ fn read_password() -> anyhow::Result<secrecy::SecretString> {
         .read_line(&mut input)
         .context("failed to read password")?;
     Ok(secrecy::SecretString::from(input.trim().to_string()))
+}
+
+fn display_skill_capability(
+    capability: &frankclaw_plugin_sdk::SkillCapability,
+) -> &'static str {
+    match capability {
+        frankclaw_plugin_sdk::SkillCapability::Prompt => "prompt",
+        frankclaw_plugin_sdk::SkillCapability::ReadSession => "read_session",
+    }
 }
 
 fn open_sessions(

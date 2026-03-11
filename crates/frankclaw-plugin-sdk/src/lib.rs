@@ -73,6 +73,7 @@ pub struct SkillManifest {
     pub name: String,
     pub description: Option<String>,
     pub prompt: String,
+    pub capabilities: Vec<SkillCapability>,
     pub tools: Vec<String>,
 }
 
@@ -83,9 +84,17 @@ impl Default for SkillManifest {
             name: String::new(),
             description: None,
             prompt: String::new(),
+            capabilities: vec![SkillCapability::Prompt],
             tools: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapability {
+    Prompt,
+    ReadSession,
 }
 
 pub fn load_workspace_skills(workspace: &Path, names: &[String]) -> Result<Vec<SkillManifest>> {
@@ -148,6 +157,18 @@ fn validate_manifest(name: &str, manifest: &SkillManifest) -> Result<()> {
             msg: format!("skill '{}' manifest is missing prompt", name),
         });
     }
+    let capabilities: std::collections::HashSet<_> =
+        manifest.capabilities.iter().cloned().collect();
+    if capabilities.is_empty() {
+        return Err(FrankClawError::ConfigValidation {
+            msg: format!("skill '{}' manifest must declare at least one capability", name),
+        });
+    }
+    if !capabilities.contains(&SkillCapability::Prompt) {
+        return Err(FrankClawError::ConfigValidation {
+            msg: format!("skill '{}' manifest must declare the 'prompt' capability", name),
+        });
+    }
     for tool in &manifest.tools {
         if tool.trim().is_empty() {
             return Err(FrankClawError::ConfigValidation {
@@ -155,7 +176,35 @@ fn validate_manifest(name: &str, manifest: &SkillManifest) -> Result<()> {
             });
         }
     }
+    for required in required_capabilities_for_tools(&manifest.tools) {
+        if !capabilities.contains(&required) {
+            return Err(FrankClawError::ConfigValidation {
+                msg: format!(
+                    "skill '{}' is missing required capability '{}'",
+                    name,
+                    capability_name(&required)
+                ),
+            });
+        }
+    }
     Ok(())
+}
+
+fn required_capabilities_for_tools(tools: &[String]) -> std::collections::HashSet<SkillCapability> {
+    tools
+        .iter()
+        .filter_map(|tool| match tool.as_str() {
+            "session.inspect" => Some(SkillCapability::ReadSession),
+            _ => None,
+        })
+        .collect()
+}
+
+fn capability_name(capability: &SkillCapability) -> &'static str {
+    match capability {
+        SkillCapability::Prompt => "prompt",
+        SkillCapability::ReadSession => "read_session",
+    }
 }
 
 fn resolve_skill_manifest_path(workspace: &Path, name: &str) -> Result<PathBuf> {
@@ -204,6 +253,7 @@ mod tests {
                 "id": "briefing",
                 "name": "Briefing",
                 "prompt": "Summarize clearly.",
+                "capabilities": ["prompt", "read_session"],
                 "tools": ["session.inspect"]
             })
             .to_string(),
@@ -213,6 +263,40 @@ mod tests {
         let manifest = load_workspace_skill(&root, "briefing").expect("skill should load");
         assert_eq!(manifest.id, "briefing");
         assert_eq!(manifest.tools, vec!["session.inspect"]);
+        assert_eq!(
+            manifest.capabilities,
+            vec![SkillCapability::Prompt, SkillCapability::ReadSession]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_workspace_skill_rejects_missing_required_capability() {
+        let root = std::env::temp_dir().join(format!(
+            "frankclaw-skill-capability-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time should work")
+                .as_nanos()
+        ));
+        let skill_dir = root.join("skills/briefing");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir should exist");
+        std::fs::write(
+            skill_dir.join("skill.json"),
+            serde_json::json!({
+                "id": "briefing",
+                "name": "Briefing",
+                "prompt": "Summarize clearly.",
+                "capabilities": ["prompt"],
+                "tools": ["session.inspect"]
+            })
+            .to_string(),
+        )
+        .expect("skill manifest should write");
+
+        let err = load_workspace_skill(&root, "briefing").expect_err("skill should fail");
+        assert!(err.to_string().contains("missing required capability 'read_session'"));
 
         let _ = std::fs::remove_dir_all(root);
     }

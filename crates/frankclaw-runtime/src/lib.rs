@@ -857,6 +857,7 @@ mod tests {
                 "id": "briefing",
                 "name": "Briefing",
                 "prompt": "Summarize in a terse operational style.",
+                "capabilities": ["prompt"],
                 "tools": []
             })
             .to_string(),
