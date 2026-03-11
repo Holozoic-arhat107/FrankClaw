@@ -9,7 +9,7 @@ use frankclaw_core::channel::*;
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
-use crate::media_text::text_or_attachment_placeholder;
+use crate::media_text::{normalize_mime_type, text_or_attachment_placeholder};
 use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const WHATSAPP_GRAPH_BASE: &str = "https://graph.facebook.com/v19.0";
@@ -223,12 +223,9 @@ pub fn parse_webhook_payload(payload: &serde_json::Value) -> Vec<InboundMessage>
                     continue;
                 };
                 let attachments = build_inbound_attachments(message);
+                let message_text = extract_message_text(message);
                 let text = text_or_attachment_placeholder(
-                    message["text"]["body"]
-                        .as_str()
-                        .or_else(|| message["image"]["caption"].as_str())
-                        .or_else(|| message["video"]["caption"].as_str())
-                        .or_else(|| message["document"]["caption"].as_str()),
+                    message_text,
                     &attachments,
                 );
                 let Some(text) = text else {
@@ -278,10 +275,12 @@ fn build_inbound_attachments(message: &serde_json::Value) -> Vec<InboundAttachme
 
         attachments.push(InboundAttachment {
             media_id: None,
-            mime_type: payload["mime_type"]
-                .as_str()
-                .unwrap_or(mime_fallback)
-                .to_string(),
+            mime_type: normalize_mime_type(
+                payload["mime_type"]
+                    .as_str()
+                    .unwrap_or(mime_fallback),
+            )
+            .to_string(),
             filename: payload["filename"].as_str().map(str::to_string),
             size_bytes: None,
             url: None,
@@ -289,6 +288,18 @@ fn build_inbound_attachments(message: &serde_json::Value) -> Vec<InboundAttachme
     }
 
     attachments
+}
+
+fn extract_message_text(message: &serde_json::Value) -> Option<&str> {
+    message["text"]["body"]
+        .as_str()
+        .or_else(|| message["image"]["caption"].as_str())
+        .or_else(|| message["video"]["caption"].as_str())
+        .or_else(|| message["document"]["caption"].as_str())
+        .or_else(|| message["button"]["text"].as_str())
+        .or_else(|| message["interactive"]["button_reply"]["title"].as_str())
+        .or_else(|| message["interactive"]["list_reply"]["title"].as_str())
+        .or_else(|| message["interactive"]["list_reply"]["description"].as_str())
 }
 
 pub fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
@@ -423,6 +434,66 @@ mod tests {
         assert_eq!(messages[0].text.as_deref(), Some("<media:image>"));
         assert_eq!(messages[0].attachments.len(), 1);
         assert_eq!(messages[0].attachments[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn parse_webhook_payload_extracts_interactive_reply_titles() {
+        let payload = serde_json::json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": {
+                            "phone_number_id": "12345"
+                        },
+                        "messages": [{
+                            "from": "15551234567",
+                            "id": "wamid.3",
+                            "timestamp": "1710000002",
+                            "type": "interactive",
+                            "interactive": {
+                                "button_reply": {
+                                    "id": "btn-1",
+                                    "title": "Yes, continue"
+                                }
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        let messages = parse_webhook_payload(&payload);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text.as_deref(), Some("Yes, continue"));
+    }
+
+    #[test]
+    fn parse_webhook_payload_normalizes_parameterized_audio_mime() {
+        let payload = serde_json::json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": {
+                            "phone_number_id": "12345"
+                        },
+                        "messages": [{
+                            "from": "15551234567",
+                            "id": "wamid.4",
+                            "timestamp": "1710000003",
+                            "type": "audio",
+                            "audio": {
+                                "mime_type": "Audio/Ogg; codecs=opus"
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        let messages = parse_webhook_payload(&payload);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text.as_deref(), Some("<media:audio>"));
+        assert_eq!(messages[0].attachments[0].mime_type, "audio/ogg");
     }
 
     #[test]

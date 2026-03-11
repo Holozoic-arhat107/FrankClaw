@@ -39,8 +39,8 @@ pub(crate) fn attachment_placeholder(attachments: &[InboundAttachment]) -> Strin
 
     let mime = attachments
         .first()
-        .map(|attachment| attachment.mime_type.as_str())
-        .unwrap_or("application/octet-stream");
+        .map(|attachment| normalize_mime_type(&attachment.mime_type))
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     if mime.starts_with("image/") {
         "<media:image>".into()
     } else if mime.starts_with("audio/") {
@@ -50,6 +50,16 @@ pub(crate) fn attachment_placeholder(attachments: &[InboundAttachment]) -> Strin
     } else {
         "<media:attachment>".into()
     }
+}
+
+pub(crate) fn normalize_mime_type(value: &str) -> String {
+    value
+        .split(';')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -78,7 +88,7 @@ mod tests {
     fn text_or_attachment_placeholder_falls_back_to_media_marker() {
         let attachments = vec![InboundAttachment {
             media_id: None,
-            mime_type: "audio/ogg".into(),
+            mime_type: "Audio/Ogg; codecs=opus".into(),
             filename: Some("voice.ogg".into()),
             size_bytes: Some(42),
             url: None,
