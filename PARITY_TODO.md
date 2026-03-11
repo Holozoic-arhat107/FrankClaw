@@ -94,18 +94,16 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
 
 ### Extensibility & Hooks
 
-- [ ] **Hooks System** — Event-driven extensibility
-  OpenClaw has a full hook system with event types (command, session, agent, gateway, message),
-  fire-and-forget hooks, bundled hooks, message hook mappers, frontmatter parsing, workspace
-  hooks, hook installer/loader. FrankClaw has webhooks but no general hook/plugin event system.
+- [x] **Hooks System** — Event-driven hook registry with 5 event types (command, session, agent,
+  gateway, message), async fire-and-forget execution, general and specific event matching,
+  30s timeout per handler, typed event constructors. (`frankclaw-core/src/hooks.rs`)
 
 - [ ] **Gmail Integration** — Email as inbound channel
   OpenClaw integrates Gmail via Google Pub/Sub with Tailscale tunneling, label filtering,
   push token auth, configurable polling. FrankClaw has no email integration.
 
-- [ ] **Skills System** — Installable agent skills
-  OpenClaw has installable/downloadable skills, workspace scanning, bundled allowlist,
-  skill status tracking, tar extraction. FrankClaw has no skills concept.
+- [x] **Skills System** — Workspace-loaded skill manifests with validation, capability-based
+  tool access control, and prompt injection. (`frankclaw-plugin-sdk/src/lib.rs`)
 
 - [ ] **ACP (Agent Client Protocol)** — Standard agent protocol
   OpenClaw implements ACP for agent sessions with persistent bindings, session mapping,
@@ -260,8 +258,8 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
 
 ### Tier 3 — Extensibility
 
-9. Hooks system (foundation for extensibility)
-10. Skills system (community contribution)
+9. ~~Hooks system~~ ✅
+10. ~~Skills system~~ ✅ (already implemented in plugin-sdk)
 11. ACP protocol (standard interop)
 12. Bash tools with sandboxing (powerful but needs security care)
 
