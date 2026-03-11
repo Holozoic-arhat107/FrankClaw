@@ -119,6 +119,10 @@ impl MediaId {
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        uuid::Uuid::parse_str(value.trim()).ok().map(Self)
+    }
 }
 
 impl Default for MediaId {

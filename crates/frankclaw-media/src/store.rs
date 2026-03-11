@@ -17,6 +17,12 @@ pub struct MediaStore {
     ttl_hours: u64,
 }
 
+pub struct StoredMediaContent {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+    pub filename: String,
+}
+
 impl MediaStore {
     pub fn new(base_dir: PathBuf, max_file_size: u64, ttl_hours: u64) -> Result<Self> {
         std::fs::create_dir_all(&base_dir).map_err(|e| FrankClawError::Internal {
@@ -110,6 +116,54 @@ impl MediaStore {
 
         Ok(deleted)
     }
+
+    pub fn read(
+        &self,
+        id: &MediaId,
+    ) -> Result<Option<StoredMediaContent>> {
+        let Some(path) = self.resolve_path(id)? else {
+            return Ok(None);
+        };
+        let bytes = std::fs::read(&path).map_err(|e| FrankClawError::Internal {
+            msg: format!("failed to read media file: {e}"),
+        })?;
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("media.bin")
+            .to_string();
+        let mime_type = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(mime_from_safe_extension)
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        Ok(Some(StoredMediaContent {
+            bytes,
+            mime_type,
+            filename,
+        }))
+    }
+
+    fn resolve_path(&self, id: &MediaId) -> Result<Option<PathBuf>> {
+        let prefix = id.to_string();
+        let entries = std::fs::read_dir(&self.base_dir).map_err(|e| FrankClawError::Internal {
+            msg: format!("failed to read media directory: {e}"),
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if stem == prefix {
+                return Ok(Some(path));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// Map MIME type to a safe file extension.
@@ -131,6 +185,26 @@ fn mime_to_safe_extension(mime: &str) -> &str {
         "text/plain" => "txt",
         "application/json" => "json",
         _ => "bin", // Safe default — never .exe, .sh, .bat, etc.
+    }
+}
+
+fn mime_from_safe_extension(ext: &str) -> &str {
+    match ext {
+        "jpg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "weba" => "audio/webm",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain; charset=utf-8",
+        "json" => "application/json",
+        _ => "application/octet-stream",
     }
 }
 
@@ -165,5 +239,26 @@ mod tests {
         assert_eq!(mime_to_safe_extension("application/x-executable"), "bin");
         assert_eq!(mime_to_safe_extension("application/x-sh"), "bin");
         assert_eq!(mime_to_safe_extension("image/png"), "png");
+    }
+
+    #[test]
+    fn read_returns_bytes_and_inferred_mime() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-media-read-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = MediaStore::new(temp_dir.clone(), 1024, 1).expect("store should create");
+        let media = store
+            .store("note.txt", "text/plain", b"hello")
+            .expect("media should store");
+
+        let loaded = store
+            .read(&media.id)
+            .expect("media read should succeed")
+            .expect("media should exist");
+        assert_eq!(loaded.bytes, b"hello");
+        assert_eq!(loaded.mime_type, "text/plain; charset=utf-8");
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

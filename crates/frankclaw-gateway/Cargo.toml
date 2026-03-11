@@ -9,6 +9,7 @@ frankclaw-core = { workspace = true }
 frankclaw-crypto = { workspace = true }
 frankclaw-channels = { workspace = true }
 frankclaw-cron = { workspace = true }
+frankclaw-media = { workspace = true }
 frankclaw-runtime = { workspace = true }
 frankclaw-sessions = { workspace = true }
 axum = { workspace = true }

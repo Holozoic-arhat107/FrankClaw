@@ -795,6 +795,7 @@ dependencies = [
  "frankclaw-core",
  "frankclaw-cron",
  "frankclaw-crypto",
+ "frankclaw-media",
  "frankclaw-runtime",
  "frankclaw-sessions",
  "futures-util",

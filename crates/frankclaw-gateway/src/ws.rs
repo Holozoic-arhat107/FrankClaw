@@ -273,6 +273,7 @@ mod tests {
     use frankclaw_core::protocol::Method;
     use frankclaw_core::session::SessionStore;
     use frankclaw_core::types::RequestId;
+    use frankclaw_media::MediaStore;
     use frankclaw_sessions::SqliteSessionStore;
     use secrecy::SecretString;
 
@@ -338,6 +339,10 @@ mod tests {
             PairingStore::open(&temp_dir.join("pairings.json"))
                 .expect("pairing store should open"),
         );
+        let media = Arc::new(
+            MediaStore::new(temp_dir.join("media"), 1024 * 1024, 1)
+                .expect("media store should open"),
+        );
 
         let mut config = frankclaw_core::config::FrankClawConfig::default();
         config.gateway.auth = AuthMode::Token {
@@ -355,7 +360,7 @@ mod tests {
             .expect("runtime should build"),
         );
         let channels = Arc::new(ChannelSet::from_parts(HashMap::new(), None, None));
-        GatewayState::new(config, sessions, runtime, channels, pairing)
+        GatewayState::new(config, sessions, runtime, channels, pairing, media)
     }
 
     fn test_request(method: Method, params: serde_json::Value) -> RequestFrame {

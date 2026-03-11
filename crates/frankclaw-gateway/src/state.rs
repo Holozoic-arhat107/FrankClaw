@@ -10,6 +10,7 @@ use frankclaw_core::config::FrankClawConfig;
 use frankclaw_core::types::ChannelId;
 use frankclaw_core::types::ConnId;
 use frankclaw_runtime::Runtime;
+use frankclaw_media::MediaStore;
 use frankclaw_sessions::SqliteSessionStore;
 
 use crate::broadcast::BroadcastHandle;
@@ -42,6 +43,9 @@ pub struct GatewayState {
     /// Shared canvas host state for the local console.
     pub canvas: Arc<CanvasStore>,
 
+    /// Local media store for authenticated upload/download flows.
+    pub media: Arc<MediaStore>,
+
     /// Monotonic connection counter.
     pub next_conn_id: std::sync::atomic::AtomicU64,
 
@@ -71,6 +75,7 @@ impl GatewayState {
         runtime: Arc<Runtime>,
         channels: Arc<ChannelSet>,
         pairing: Arc<PairingStore>,
+        media: Arc<MediaStore>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: ArcSwap::new(Arc::new(config)),
@@ -80,6 +85,7 @@ impl GatewayState {
             channels,
             pairing,
             canvas: CanvasStore::new(),
+            media,
             next_conn_id: std::sync::atomic::AtomicU64::new(1),
             broadcast: BroadcastHandle::new(256),
             shutdown: CancellationToken::new(),

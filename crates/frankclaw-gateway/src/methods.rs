@@ -458,6 +458,7 @@ mod tests {
     use frankclaw_core::protocol::Method;
     use frankclaw_core::session::{SessionEntry, SessionScoping, SessionStore, TranscriptEntry};
     use frankclaw_core::types::{AgentId, ChannelId, RequestId, Role};
+    use frankclaw_media::MediaStore;
     use frankclaw_sessions::SqliteSessionStore;
 
     use crate::delivery::{StoredReplyMetadata, set_last_reply_in_metadata};
@@ -523,6 +524,10 @@ mod tests {
             PairingStore::open(&temp_dir.join("pairings.json"))
                 .expect("pairings should open"),
         );
+        let media = Arc::new(
+            MediaStore::new(temp_dir.join("media"), 1024 * 1024, 1)
+                .expect("media store should open"),
+        );
         let config = frankclaw_core::config::FrankClawConfig::default();
         let runtime = Arc::new(
             frankclaw_runtime::Runtime::from_providers(
@@ -535,7 +540,7 @@ mod tests {
         );
         let channels = Arc::new(ChannelSet::from_parts(HashMap::new(), None, None));
         (
-            GatewayState::new(config, sessions.clone(), runtime, channels, pairing),
+            GatewayState::new(config, sessions.clone(), runtime, channels, pairing, media),
             sessions,
         )
     }

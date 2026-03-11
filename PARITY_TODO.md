@@ -53,6 +53,7 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 ### Rich Channel Behavior
 
 - [ ] Rich attachment/media handling across supported channels
+  Current slice: authenticated web media upload/download plus attachment-only web inbound turns
 - [x] Broader edit support beyond Telegram
 - [x] Delete support where platforms allow it
 - [x] Shared outbound text normalization and reply-safe formatting

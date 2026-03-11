@@ -7,7 +7,7 @@ use axum::{
     extract::{
         ConnectInfo, Json, Path, Query, State, WebSocketUpgrade,
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Router,
@@ -22,7 +22,9 @@ use tracing::info;
 use frankclaw_core::channel::{InboundMessage, OutboundMessage};
 use frankclaw_core::config::{BindMode, ChannelDmPolicy, FrankClawConfig};
 use frankclaw_core::session::SessionStore;
+use frankclaw_core::types::MediaId;
 use frankclaw_cron::{CronJob, CronService};
+use frankclaw_media::MediaStore;
 use frankclaw_runtime::Runtime;
 use frankclaw_sessions::SqliteSessionStore;
 
@@ -42,6 +44,7 @@ pub async fn run(
     runtime: Arc<Runtime>,
     pairing: Arc<PairingStore>,
     cron: Arc<CronService>,
+    media: Arc<MediaStore>,
 ) -> anyhow::Result<()> {
     // Validate that bind + auth combination is safe.
     validate_bind_auth(&config.gateway.bind, &config.gateway.auth)?;
@@ -49,7 +52,7 @@ pub async fn run(
     let rate_limiter = Arc::new(AuthRateLimiter::new(config.gateway.rate_limit.clone()));
     let bind_addr = resolve_bind_addr(&config.gateway.bind, config.gateway.port);
     let channels = Arc::new(frankclaw_channels::load_from_config(&config)?);
-    let state = GatewayState::new(config, sessions, runtime, channels, pairing);
+    let state = GatewayState::new(config, sessions, runtime, channels, pairing, media);
     log_loaded_skills(&state);
     start_channel_runtime(state.clone());
     start_session_maintenance(state.clone());
@@ -85,6 +88,8 @@ fn build_router(
         // Local web channel ingress / polling.
         .route("/api/web/inbound", post(web_inbound_handler))
         .route("/api/web/outbound", get(web_outbound_handler))
+        .route("/api/media/upload", post(media_upload_handler))
+        .route("/api/media/{media_id}", get(media_download_handler))
         .route(
             "/api/whatsapp/webhook",
             get(whatsapp_webhook_verify_handler).post(whatsapp_webhook_inbound_handler),
@@ -256,7 +261,7 @@ async fn readiness_handler(State(state): State<AppState>) -> StatusCode {
 #[derive(Debug, serde::Deserialize)]
 struct WebInboundRequest {
     sender_id: String,
-    message: String,
+    message: Option<String>,
     #[serde(default = "default_web_account_id")]
     account_id: String,
     sender_name: Option<String>,
@@ -265,6 +270,16 @@ struct WebInboundRequest {
     is_group: bool,
     #[serde(default)]
     is_mention: bool,
+    #[serde(default)]
+    attachments: Vec<WebInboundAttachment>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WebInboundAttachment {
+    media_id: String,
+    mime_type: String,
+    filename: Option<String>,
+    size_bytes: Option<u64>,
 }
 
 fn default_web_account_id() -> String {
@@ -290,8 +305,21 @@ async fn web_inbound_handler(
         thread_id: body.thread_id,
         is_group: body.is_group,
         is_mention: body.is_mention,
-        text: Some(body.message),
-        attachments: Vec::new(),
+        text: web_inbound_text_or_placeholder(body.message.as_deref(), &body.attachments),
+        attachments: body
+            .attachments
+            .into_iter()
+            .filter_map(|attachment| {
+                let media_id = MediaId::parse(&attachment.media_id)?;
+                Some(frankclaw_core::channel::InboundAttachment {
+                    media_id: Some(media_id),
+                    mime_type: attachment.mime_type,
+                    filename: attachment.filename,
+                    size_bytes: attachment.size_bytes,
+                    url: Some(format!("/api/media/{}", attachment.media_id)),
+                })
+            })
+            .collect(),
         platform_message_id: None,
         timestamp: chrono::Utc::now(),
     };
@@ -334,6 +362,126 @@ async fn web_outbound_handler(
         Json(serde_json::json!({ "messages": messages })),
     )
         .into_response()
+}
+
+async fn media_upload_handler(
+    State(state): State<AppState>,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(response) = require_http_auth(&state, addr, &headers, Some(&query)) {
+        return response;
+    }
+
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream");
+    let filename = headers
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("upload.bin");
+
+    match state.gateway.media.store(filename, content_type, &body) {
+        Ok(media) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "media_id": media.id.to_string(),
+                "filename": media.original_name,
+                "mime_type": media.mime_type,
+                "size_bytes": media.size_bytes,
+                "url": format!("/api/media/{}", media.id),
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn media_download_handler(
+    State(state): State<AppState>,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(media_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(response) = require_http_auth(&state, addr, &headers, Some(&query)) {
+        return response;
+    }
+
+    let Some(media_id) = MediaId::parse(&media_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid media_id" })),
+        )
+            .into_response();
+    };
+
+    match state.gateway.media.read(&media_id) {
+        Ok(Some(media)) => {
+            let mut response_headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&media.mime_type) {
+                response_headers.insert(axum::http::header::CONTENT_TYPE, value);
+            }
+            if let Ok(value) = HeaderValue::from_str(&format!(
+                "inline; filename=\"{}\"",
+                media.filename
+            )) {
+                response_headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+            }
+
+            (StatusCode::OK, response_headers, media.bytes).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "media not found" })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+fn web_inbound_text_or_placeholder(
+    message: Option<&str>,
+    attachments: &[WebInboundAttachment],
+) -> Option<String> {
+    let text = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if text.is_some() {
+        return text;
+    }
+    if attachments.is_empty() {
+        None
+    } else if attachments.len() > 1 {
+        Some("<media:attachments>".into())
+    } else {
+        let mime = attachments[0].mime_type.as_str();
+        if mime.starts_with("image/") {
+            Some("<media:image>".into())
+        } else if mime.starts_with("audio/") {
+            Some("<media:audio>".into())
+        } else if mime.starts_with("video/") {
+            Some("<media:video>".into())
+        } else {
+            Some("<media:attachment>".into())
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1184,7 +1332,8 @@ mod tests {
     use frankclaw_core::session::SessionStore;
     use frankclaw_core::types::Role;
     use frankclaw_sessions::SqliteSessionStore;
-    use secrecy::ExposeSecret;
+    use frankclaw_media::MediaStore;
+    use secrecy::{ExposeSecret, SecretString};
     use tower::ServiceExt;
 
     #[test]
@@ -1346,6 +1495,10 @@ mod tests {
             PairingStore::open(&temp_dir.join("pairings.json"))
                 .expect("pairings should open"),
         );
+        let media = Arc::new(
+            MediaStore::new(temp_dir.join("media"), 1024 * 1024, 1)
+                .expect("media store should open"),
+        );
         config.models.providers = vec![ProviderConfig {
             id: "mock".into(),
             api: "ollama".into(),
@@ -1365,7 +1518,7 @@ mod tests {
             .expect("runtime should build"),
         );
         (
-            GatewayState::new(config, sessions.clone(), runtime, channels, pairing),
+            GatewayState::new(config, sessions.clone(), runtime, channels, pairing, media),
             sessions,
         )
     }
@@ -1510,6 +1663,144 @@ mod tests {
 
         let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
         let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn media_upload_and_download_roundtrip_requires_auth_and_uses_store() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-media-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut config = FrankClawConfig::default();
+        config.gateway.auth = frankclaw_core::auth::AuthMode::Token {
+            token: Some(SecretString::from("super-secret".to_string())),
+        };
+        config.channels.insert(
+            frankclaw_core::types::ChannelId::new("web"),
+            ChannelConfig {
+                enabled: true,
+                accounts: Vec::new(),
+                extra: serde_json::json!({
+                    "dm_policy": "open"
+                }),
+            },
+        );
+        let channels = Arc::new(
+            frankclaw_channels::load_from_config(&config).expect("channels should load"),
+        );
+        let (state, _sessions) = build_test_state(&temp_dir, config, channels).await;
+        let app = build_router(state.clone(), Arc::new(AuthRateLimiter::new(
+            state.current_config().gateway.rate_limit.clone(),
+        )));
+
+        let mut upload_request = Request::post("/api/media/upload?token=super-secret")
+            .header("content-type", "text/plain")
+            .header("x-file-name", "hello.txt")
+            .body(Body::from("hello media"))
+            .expect("request should build");
+        upload_request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+
+        let upload = app
+            .clone()
+            .oneshot(upload_request)
+            .await
+            .expect("upload request should succeed");
+        let upload_status = upload.status();
+        let upload_body = to_bytes(upload.into_body(), usize::MAX)
+            .await
+            .expect("upload body should read");
+        assert_eq!(
+            upload_status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&upload_body)
+        );
+        let upload_json: serde_json::Value =
+            serde_json::from_slice(&upload_body).expect("upload response should be JSON");
+        let media_id = upload_json["media_id"]
+            .as_str()
+            .expect("media id should be present");
+
+        let mut download_request = Request::get(format!("/api/media/{media_id}?token=super-secret"))
+            .body(Body::empty())
+            .expect("request should build");
+        download_request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+
+        let download = app
+            .oneshot(download_request)
+            .await
+            .expect("download request should succeed");
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(
+            download.headers().get("content-type").and_then(|value| value.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+        let download_body = to_bytes(download.into_body(), usize::MAX)
+            .await
+            .expect("download body should read");
+        assert_eq!(download_body, Bytes::from_static(b"hello media"));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn web_inbound_accepts_attachment_only_messages() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-web-attachment-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            frankclaw_core::types::ChannelId::new("web"),
+            ChannelConfig {
+                enabled: true,
+                accounts: Vec::new(),
+                extra: serde_json::json!({
+                    "dm_policy": "open"
+                }),
+            },
+        );
+        let channels = Arc::new(
+            frankclaw_channels::load_from_config(&config).expect("channels should load"),
+        );
+        let (state, sessions) = build_test_state(&temp_dir, config, channels).await;
+
+        let inbound = InboundMessage {
+            channel: frankclaw_core::types::ChannelId::new("web"),
+            account_id: "default".into(),
+            sender_id: "user-1".into(),
+            sender_name: Some("User".into()),
+            thread_id: None,
+            is_group: false,
+            is_mention: false,
+            text: Some("<media:image>".into()),
+            attachments: vec![frankclaw_core::channel::InboundAttachment {
+                media_id: MediaId::parse(&uuid::Uuid::new_v4().to_string()),
+                mime_type: "image/png".into(),
+                filename: Some("photo.png".into()),
+                size_bytes: Some(7),
+                url: Some("/api/media/example".into()),
+            }],
+            platform_message_id: None,
+            timestamp: chrono::Utc::now(),
+        };
+        let session_key = state.runtime.session_key_for_inbound(&inbound);
+
+        process_inbound_message(state.clone(), inbound)
+            .await
+            .expect("attachment-only inbound should succeed");
+
+        let transcript = sessions
+            .get_transcript(&session_key, 10, None)
+            .await
+            .expect("transcript should load");
+        assert_eq!(transcript[0].content, "<media:image>");
+
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 

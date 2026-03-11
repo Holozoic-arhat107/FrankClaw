@@ -281,6 +281,7 @@ async fn main() -> anyhow::Result<()> {
             );
             let pairing = open_pairing_store(&state_dir)?;
             let cron = open_cron_service(&state_dir)?;
+            let media = open_media_store(&config, &state_dir)?;
 
             info!(
                 port = config.gateway.port,
@@ -288,7 +289,7 @@ async fn main() -> anyhow::Result<()> {
                 "starting frankclaw gateway"
             );
 
-            frankclaw_gateway::server::run(config, sessions, runtime, pairing, cron).await?;
+            frankclaw_gateway::server::run(config, sessions, runtime, pairing, cron, media).await?;
         }
 
         Command::GenToken => {
@@ -1242,6 +1243,25 @@ fn open_sessions(
             load_master_key_from_env()?.as_ref(),
         )
             .context("failed to open session store")?,
+    ))
+}
+
+fn open_media_store(
+    config: &frankclaw_core::config::FrankClawConfig,
+    state_dir: &std::path::Path,
+) -> anyhow::Result<std::sync::Arc<frankclaw_media::MediaStore>> {
+    let media_dir = config
+        .media
+        .storage_path
+        .clone()
+        .unwrap_or_else(|| state_dir.join("media"));
+    Ok(std::sync::Arc::new(
+        frankclaw_media::MediaStore::new(
+            media_dir,
+            config.media.max_file_size_bytes,
+            config.media.ttl_hours,
+        )
+        .context("failed to open media store")?,
     ))
 }
 
