@@ -7,6 +7,24 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::rate_limit::AuthRateLimiter;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExposureSurface {
+    Loopback,
+    Lan,
+    PrivateAddress(String),
+    PublicAddress(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExposureReport {
+    pub surface: ExposureSurface,
+    pub auth_mode: &'static str,
+    pub remote_ready: bool,
+    pub public_ready: bool,
+    pub summary: String,
+    pub warnings: Vec<String>,
+}
+
 /// Authenticate an incoming connection.
 ///
 /// Returns the authenticated role on success.
@@ -129,10 +147,108 @@ pub fn validate_bind_auth(
     }
 }
 
+pub fn assess_exposure(config: &frankclaw_core::config::FrankClawConfig) -> Result<ExposureReport> {
+    validate_bind_auth(&config.gateway.bind, &config.gateway.auth)?;
+
+    let surface = classify_surface(&config.gateway.bind)?;
+    let auth_mode = auth_mode_name(&config.gateway.auth);
+    let mut warnings = Vec::new();
+    let mut remote_ready = !matches!(surface, ExposureSurface::Loopback);
+    let mut public_ready = !matches!(
+        surface,
+        ExposureSurface::Loopback | ExposureSurface::Lan | ExposureSurface::PrivateAddress(_)
+    );
+
+    match &config.gateway.auth {
+        AuthMode::None => {
+            remote_ready = false;
+            public_ready = false;
+        }
+        AuthMode::Token { .. } | AuthMode::Password { .. } => {
+            if config.gateway.tls.is_none() && !matches!(surface, ExposureSurface::Loopback) {
+                warnings.push(
+                    "network-exposed direct auth is running without TLS; keep it tailnet-only or terminate TLS upstream"
+                        .into(),
+                );
+                public_ready = false;
+            }
+        }
+        AuthMode::TrustedProxy { .. } => {
+            warnings.push(
+                "trusted_proxy mode assumes a header-scrubbing reverse proxy; do not expose it directly"
+                    .into(),
+            );
+            public_ready = false;
+        }
+        AuthMode::Tailscale => {
+            warnings.push(
+                "tailscale auth expects identity headers from a trusted Tailscale-aware proxy path"
+                    .into(),
+            );
+            public_ready = false;
+        }
+    }
+
+    if matches!(surface, ExposureSurface::Loopback) {
+        warnings.push("gateway is loopback-only; remote access is disabled".into());
+    }
+
+    let summary = match (&surface, &config.gateway.auth) {
+        (ExposureSurface::Loopback, _) => "local-only gateway".into(),
+        (_, AuthMode::Token { .. }) | (_, AuthMode::Password { .. }) => {
+            "network-exposed gateway with direct auth".into()
+        }
+        (_, AuthMode::TrustedProxy { .. }) => "reverse-proxy mediated gateway".into(),
+        (_, AuthMode::Tailscale) => "tailnet-mediated gateway".into(),
+        (_, AuthMode::None) => "misconfigured network exposure".into(),
+    };
+
+    Ok(ExposureReport {
+        surface,
+        auth_mode,
+        remote_ready,
+        public_ready,
+        summary,
+        warnings,
+    })
+}
+
+fn auth_mode_name(mode: &AuthMode) -> &'static str {
+    match mode {
+        AuthMode::None => "none",
+        AuthMode::Token { .. } => "token",
+        AuthMode::Password { .. } => "password",
+        AuthMode::TrustedProxy { .. } => "trusted_proxy",
+        AuthMode::Tailscale => "tailscale",
+    }
+}
+
+fn classify_surface(bind: &frankclaw_core::config::BindMode) -> Result<ExposureSurface> {
+    match bind {
+        frankclaw_core::config::BindMode::Loopback => Ok(ExposureSurface::Loopback),
+        frankclaw_core::config::BindMode::Lan => Ok(ExposureSurface::Lan),
+        frankclaw_core::config::BindMode::Address(address) => {
+            let ip: std::net::IpAddr = address.parse().map_err(|_| FrankClawError::ConfigValidation {
+                msg: format!("gateway.bind address '{}' is not a valid IP address", address),
+            })?;
+            let is_private = match ip {
+                std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+                std::net::IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+            };
+            if is_private {
+                Ok(ExposureSurface::PrivateAddress(address.clone()))
+            } else {
+                Ok(ExposureSurface::PublicAddress(address.clone()))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use frankclaw_core::config::BindMode;
+    use secrecy::SecretString;
 
     #[test]
     fn loopback_allows_no_auth() {
@@ -150,5 +266,31 @@ mod tests {
             token: Some(SecretString::from("test")),
         };
         assert!(validate_bind_auth(&BindMode::Lan, &mode).is_ok());
+    }
+
+    #[test]
+    fn assess_exposure_marks_loopback_as_local_only() {
+        let report = assess_exposure(&frankclaw_core::config::FrankClawConfig::default())
+            .expect("assessment should succeed");
+        assert_eq!(report.surface, ExposureSurface::Loopback);
+        assert!(!report.remote_ready);
+        assert!(report.warnings.iter().any(|warning| warning.contains("loopback-only")));
+    }
+
+    #[test]
+    fn assess_exposure_warns_on_public_direct_auth_without_tls() {
+        let mut config = frankclaw_core::config::FrankClawConfig::default();
+        config.gateway.bind = BindMode::Address("203.0.113.10".into());
+        config.gateway.auth = AuthMode::Token {
+            token: Some(SecretString::from("secret")),
+        };
+
+        let report = assess_exposure(&config).expect("assessment should succeed");
+        assert!(report.remote_ready);
+        assert!(!report.public_ready);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("without TLS")));
     }
 }

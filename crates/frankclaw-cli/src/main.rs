@@ -173,6 +173,16 @@ enum Command {
         account: Option<String>,
     },
 
+    /// Show how the current gateway config would be exposed remotely.
+    RemoteStatus,
+
+    /// Fail unless the current gateway config is safe for the requested exposure.
+    RemoteCheck {
+        /// Require the config to be suitable for direct public exposure.
+        #[arg(long)]
+        public: bool,
+    },
+
     /// Initialize a new config file with secure defaults.
     Init {
         /// Force overwrite existing config.
@@ -275,6 +285,8 @@ async fn main() -> anyhow::Result<()> {
             if config.security.encrypt_sessions && load_master_key_from_env()?.is_none() {
                 warnings.push("session encryption is enabled but FRANKCLAW_MASTER_KEY is not set");
             }
+            let exposure = frankclaw_gateway::auth::assess_exposure(&config)?;
+            warnings.extend(exposure.warnings.iter().map(String::as_str));
 
             println!("Doctor check passed.");
             if warnings.is_empty() {
@@ -542,6 +554,28 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
+        Command::RemoteStatus => {
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+            let report = frankclaw_gateway::auth::assess_exposure(&config)?;
+            print_exposure_report(&report);
+        }
+
+        Command::RemoteCheck { public } => {
+            let config = load_config(cli.config.as_deref(), &state_dir)?;
+            config.validate()?;
+            let report = frankclaw_gateway::auth::assess_exposure(&config)?;
+            print_exposure_report(&report);
+
+            if public {
+                if !report.public_ready {
+                    anyhow::bail!("gateway config is not ready for direct public exposure");
+                }
+            } else if !report.remote_ready {
+                anyhow::bail!("gateway config is not ready for remote exposure");
+            }
+        }
+
         Command::Init { force } => {
             let config_path = cli
                 .config
@@ -623,6 +657,36 @@ fn display_skill_capability(
     match capability {
         frankclaw_plugin_sdk::SkillCapability::Prompt => "prompt",
         frankclaw_plugin_sdk::SkillCapability::ReadSession => "read_session",
+    }
+}
+
+fn print_exposure_report(report: &frankclaw_gateway::auth::ExposureReport) {
+    println!("Summary: {}", report.summary);
+    println!("Auth:    {}", report.auth_mode);
+    println!("Bind:    {}", display_exposure_surface(&report.surface));
+    println!("Remote:  {}", if report.remote_ready { "ready" } else { "not ready" });
+    println!("Public:  {}", if report.public_ready { "ready" } else { "not ready" });
+    if !report.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warning in &report.warnings {
+            println!("  - {warning}");
+        }
+    }
+}
+
+fn display_exposure_surface(
+    surface: &frankclaw_gateway::auth::ExposureSurface,
+) -> String {
+    match surface {
+        frankclaw_gateway::auth::ExposureSurface::Loopback => "loopback".into(),
+        frankclaw_gateway::auth::ExposureSurface::Lan => "lan".into(),
+        frankclaw_gateway::auth::ExposureSurface::PrivateAddress(address) => {
+            format!("private_address:{address}")
+        }
+        frankclaw_gateway::auth::ExposureSurface::PublicAddress(address) => {
+            format!("public_address:{address}")
+        }
     }
 }
 

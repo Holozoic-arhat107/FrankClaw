@@ -112,6 +112,17 @@ impl FrankClawConfig {
             });
         }
 
+        if let BindMode::Address(address) = &self.gateway.bind {
+            if address.parse::<std::net::IpAddr>().is_err() {
+                return Err(FrankClawError::ConfigValidation {
+                    msg: format!(
+                        "gateway.bind address '{}' is not a valid IP address",
+                        address
+                    ),
+                });
+            }
+        }
+
         for (channel_id, channel) in &self.channels {
             channel.security_policy()?;
             validate_channel_config(channel_id, channel)?;
@@ -873,6 +884,13 @@ mod tests {
             "text_field": "message"
         })];
 
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_bind_address_fails_validation() {
+        let mut config = FrankClawConfig::default();
+        config.gateway.bind = BindMode::Address("not-an-ip".into());
         assert!(config.validate().is_err());
     }
 }
