@@ -40,16 +40,27 @@ pub trait Tool: Send + Sync + 'static {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    policy: ToolPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolPolicy {
+    pub allow_browser_mutations: bool,
 }
 
 impl ToolRegistry {
     pub fn with_builtins() -> Self {
+        Self::with_policy(ToolPolicy::from_env())
+    }
+
+    pub fn with_policy(policy: ToolPolicy) -> Self {
         let browser = Arc::new(
             BrowserClient::from_env()
                 .unwrap_or_else(|_| BrowserClient::new("http://127.0.0.1:9222/").expect("default browser client should build")),
         );
         let mut registry = Self {
             tools: HashMap::new(),
+            policy,
         };
         registry.register(Arc::new(SessionInspectTool));
         registry.register(Arc::new(BrowserOpenTool::new(browser.clone())));
@@ -100,6 +111,14 @@ impl ToolRegistry {
                 msg: format!("tool '{}' is not allowed for agent '{}'", name, ctx.agent_id),
             });
         }
+        if self.policy.blocks(name) {
+            return Err(FrankClawError::AgentRuntime {
+                msg: format!(
+                    "tool '{}' requires explicit operator approval via FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1",
+                    name
+                ),
+            });
+        }
 
         let tool = self
             .tools
@@ -119,6 +138,32 @@ impl Default for ToolRegistry {
     fn default() -> Self {
         Self::with_builtins()
     }
+}
+
+impl ToolPolicy {
+    pub fn from_env() -> Self {
+        Self {
+            allow_browser_mutations: truthy_env("FRANKCLAW_ALLOW_BROWSER_MUTATIONS"),
+        }
+    }
+
+    pub fn blocks(&self, tool_name: &str) -> bool {
+        tool_requires_operator_approval(tool_name) && !self.allow_browser_mutations
+    }
+}
+
+fn truthy_env(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+pub fn tool_requires_operator_approval(tool_name: &str) -> bool {
+    matches!(tool_name, "browser.click" | "browser.type" | "browser.press")
 }
 
 #[derive(Debug, Clone)]
@@ -1285,6 +1330,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_mutation_tools_require_explicit_policy() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have local addr");
+        let mock_state = MockBrowserState {
+            page_url: Arc::new(Mutex::new("about:blank".into())),
+            title: Arc::new(Mutex::new("Example page".into())),
+            text: Arc::new(Mutex::new("Hello from Chromium".into())),
+            html: Arc::new(Mutex::new("<html><body><h1>Hello from Chromium</h1></body></html>".into())),
+            websocket_url: format!("ws://127.0.0.1:{}/devtools/page/mock-page", addr.port()),
+        };
+        let app = Router::new()
+            .route("/json/new", put(mock_create_target))
+            .route("/json/close/{target_id}", get(mock_close_target))
+            .route("/devtools/page/mock-page", get(mock_page_ws))
+            .with_state(mock_state.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock server should run");
+        });
+
+        let client = Arc::new(
+            BrowserClient::new(&format!("http://{addr}/"))
+                .expect("browser client should build"),
+        );
+        let mut registry = ToolRegistry {
+            tools: HashMap::new(),
+            policy: ToolPolicy::default(),
+        };
+        registry.register(Arc::new(BrowserOpenTool::new(client.clone())));
+        registry.register(Arc::new(BrowserClickTool::new(client)));
+
+        let ctx = ToolContext {
+            agent_id: AgentId::default_agent(),
+            session_key: Some(SessionKey::from_raw("default:web:browser-policy")),
+            sessions: Arc::new(MockSessionStore::default()),
+        };
+        let allowed = vec!["browser.open".into(), "browser.click".into()];
+
+        registry
+            .invoke_allowed(
+                &allowed,
+                "browser.open",
+                serde_json::json!({ "url": "https://example.com/" }),
+                ctx.clone(),
+            )
+            .await
+            .expect("browser.open should stay allowed");
+
+        let err = registry
+            .invoke_allowed(
+                &allowed,
+                "browser.click",
+                serde_json::json!({ "selector": "#submit" }),
+                ctx,
+            )
+            .await
+            .expect_err("browser.click should require explicit approval");
+        assert!(err
+            .to_string()
+            .contains("FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1"));
+    }
+
+    #[tokio::test]
     async fn browser_tools_drive_mock_devtools_server() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -1312,6 +1421,9 @@ mod tests {
         );
         let mut registry = ToolRegistry {
             tools: HashMap::new(),
+            policy: ToolPolicy {
+                allow_browser_mutations: true,
+            },
         };
         registry.register(Arc::new(BrowserOpenTool::new(client.clone())));
         registry.register(Arc::new(BrowserExtractTool::new(client.clone())));
@@ -1551,7 +1663,9 @@ mod tests {
             axum::serve(listener, app).await.expect("real browser test server should run");
         });
 
-        let registry = ToolRegistry::with_builtins();
+        let registry = ToolRegistry::with_policy(ToolPolicy {
+            allow_browser_mutations: true,
+        });
         let ctx = ToolContext {
             agent_id: AgentId::default_agent(),
             session_key: Some(SessionKey::from_raw("default:web:real-browser")),

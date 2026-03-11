@@ -991,26 +991,33 @@ fn collect_browser_tool_warnings(
     config: &frankclaw_core::config::FrankClawConfig,
     browser_endpoint: Option<&str>,
 ) -> Vec<String> {
+    collect_browser_tool_warnings_with_policy(
+        config,
+        browser_endpoint,
+        frankclaw_tools::ToolPolicy::from_env(),
+    )
+}
+
+fn collect_browser_tool_warnings_with_policy(
+    config: &frankclaw_core::config::FrankClawConfig,
+    browser_endpoint: Option<&str>,
+    tool_policy: frankclaw_tools::ToolPolicy,
+) -> Vec<String> {
     let browser_tools_enabled = config
         .agents
         .agents
         .values()
         .flat_map(|agent| agent.tools.iter())
-        .any(|tool| matches!(
-            tool.as_str(),
-            "browser.open"
-                | "browser.extract"
-                | "browser.snapshot"
-                | "browser.click"
-                | "browser.type"
-                | "browser.wait"
-                | "browser.press"
-                | "browser.sessions"
-                | "browser.close"
-        ));
+        .any(|tool| tool.starts_with("browser."));
     if !browser_tools_enabled {
         return Vec::new();
     }
+    let browser_mutation_tools_enabled = config
+        .agents
+        .agents
+        .values()
+        .flat_map(|agent| agent.tools.iter())
+        .any(|tool| frankclaw_tools::tool_requires_operator_approval(tool));
 
     let endpoint = browser_endpoint
         .map(str::trim)
@@ -1027,6 +1034,11 @@ fn collect_browser_tool_warnings(
     };
 
     let mut warnings = Vec::new();
+    if browser_mutation_tools_enabled && !tool_policy.allow_browser_mutations {
+        warnings.push(
+            "browser mutation tools are configured but blocked until FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1 is set".into(),
+        );
+    }
     match parsed.host_str() {
         Some("127.0.0.1") | Some("localhost") => {}
         Some(other) => warnings.push(format!(
@@ -1060,7 +1072,19 @@ fn browser_runtime_status(
     config: &frankclaw_core::config::FrankClawConfig,
     browser_endpoint: Option<&str>,
 ) -> Option<String> {
-    let warnings = collect_browser_tool_warnings(config, browser_endpoint);
+    browser_runtime_status_with_policy(
+        config,
+        browser_endpoint,
+        frankclaw_tools::ToolPolicy::from_env(),
+    )
+}
+
+fn browser_runtime_status_with_policy(
+    config: &frankclaw_core::config::FrankClawConfig,
+    browser_endpoint: Option<&str>,
+    policy: frankclaw_tools::ToolPolicy,
+) -> Option<String> {
+    let warnings = collect_browser_tool_warnings_with_policy(config, browser_endpoint, policy);
     if warnings.is_empty() {
         if config
             .agents
@@ -1069,8 +1093,24 @@ fn browser_runtime_status(
             .flat_map(|agent| agent.tools.iter())
             .any(|tool| tool.starts_with("browser."))
         {
+            let mutation_state = if config
+                .agents
+                .agents
+                .values()
+                .flat_map(|agent| agent.tools.iter())
+                .any(|tool| frankclaw_tools::tool_requires_operator_approval(tool))
+            {
+                if policy.allow_browser_mutations {
+                    "mutations enabled"
+                } else {
+                    "mutations gated"
+                }
+            } else {
+                "read-only"
+            };
             Some(format!(
-                "enabled at {}",
+                "{} at {}",
+                mutation_state,
                 browser_endpoint.unwrap_or("http://127.0.0.1:9222/")
             ))
         } else {
@@ -1472,6 +1512,63 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("docker compose up -d chromium")));
+    }
+
+    #[test]
+    fn collect_browser_tool_warnings_flags_gated_mutation_tools() {
+        let mut config = frankclaw_core::config::FrankClawConfig::default();
+        config
+            .agents
+            .agents
+            .get_mut(&frankclaw_core::types::AgentId::default_agent())
+            .expect("default agent should exist")
+            .tools = vec!["browser.type".into()];
+
+        let warnings = collect_browser_tool_warnings_with_policy(
+            &config,
+            Some("http://127.0.0.1:9222/"),
+            frankclaw_tools::ToolPolicy {
+                allow_browser_mutations: false,
+            },
+        );
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1")));
+    }
+
+    #[test]
+    fn browser_runtime_status_reports_mutation_gate_state() {
+        let mut config = frankclaw_core::config::FrankClawConfig::default();
+        config
+            .agents
+            .agents
+            .get_mut(&frankclaw_core::types::AgentId::default_agent())
+            .expect("default agent should exist")
+            .tools = vec!["browser.open".into(), "browser.click".into()];
+
+        let gated = browser_runtime_status_with_policy(
+            &config,
+            Some("http://127.0.0.1:9222/"),
+            frankclaw_tools::ToolPolicy {
+                allow_browser_mutations: false,
+            },
+        )
+        .expect("status should exist");
+        assert!(gated.contains("blocked until FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1"));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("listener should bind");
+        let endpoint = format!("http://{}", listener.local_addr().expect("addr should exist"));
+        let enabled = browser_runtime_status_with_policy(
+            &config,
+            Some(&endpoint),
+            frankclaw_tools::ToolPolicy {
+                allow_browser_mutations: true,
+            },
+        )
+        .expect("status should exist");
+        assert!(enabled.contains(&format!("mutations enabled at {}", endpoint)));
     }
 }
 

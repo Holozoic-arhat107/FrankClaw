@@ -79,7 +79,7 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 - [x] Browser session/profile management
 - [x] Visual/browser snapshots
 - [x] Safer action model for clicks/forms/navigation
-- [ ] Tool approvals for higher-risk tool families
+- [x] Tool approvals for higher-risk tool families
 - [x] More first-party tools beyond session inspection
 - [x] Better tool tracing and operator visibility
 

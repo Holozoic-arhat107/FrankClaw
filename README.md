@@ -251,13 +251,18 @@ Example use:
 frankclaw tools invoke --tool browser.open --session default:web:control --args '{"url":"https://example.com"}'
 frankclaw tools invoke --tool browser.extract --session default:web:control
 frankclaw tools invoke --tool browser.snapshot --session default:web:control
+FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1 \
 frankclaw tools invoke --tool browser.type --session default:web:control --args '{"selector":"input[name=q]","text":"frankclaw"}'
+FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1 \
 frankclaw tools invoke --tool browser.click --session default:web:control --args '{"selector":"button[type=submit]"}'
 frankclaw tools invoke --tool browser.wait --session default:web:control --args '{"selector":"#results","timeout_ms":2000}'
+FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1 \
 frankclaw tools invoke --tool browser.press --session default:web:control --args '{"selector":"input[name=q]","key":"Enter"}'
 frankclaw tools invoke --tool browser.sessions --session default:web:control
 frankclaw tools invoke --tool browser.close --session default:web:control
 ```
+
+`browser.click`, `browser.type`, and `browser.press` are treated as mutating actions and stay gated until `FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1` is set.
 
 Live regression check against a real local Chromium instance:
 
