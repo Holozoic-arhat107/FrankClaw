@@ -890,6 +890,17 @@ fn collect_doctor_warnings(
     }
 
     for (channel_id, channel) in &config.channels {
+        let policy = channel
+            .security_policy()
+            .with_context(|| format!("invalid security policy for channel '{}'", channel_id))?;
+
+        if group_surface_needs_guard(channel_id.as_str()) && !policy.require_mention_for_groups && policy.allowed_groups.is_none() {
+            warnings.push(format!(
+                "channel '{}' accepts group messages without mention gating and without a groups allowlist",
+                channel_id
+            ));
+        }
+
         for account in &channel.accounts {
             for key in [
                 "bot_token_env",
@@ -908,6 +919,28 @@ fn collect_doctor_warnings(
                             channel_id, env_name, key
                         ));
                     }
+                }
+            }
+
+            for (inline_key, env_key) in [
+                ("bot_token", "bot_token_env"),
+                ("token", "token_env"),
+                ("app_token", "app_token_env"),
+                ("access_token", "access_token_env"),
+                ("verify_token", "verify_token_env"),
+                ("app_secret", "app_secret_env"),
+            ] {
+                if account
+                    .get(inline_key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some()
+                {
+                    warnings.push(format!(
+                        "channel '{}' stores '{}' inline; prefer '{}' environment references for secrets",
+                        channel_id, inline_key, env_key
+                    ));
                 }
             }
 
@@ -931,6 +964,10 @@ fn collect_doctor_warnings(
     ));
 
     Ok(warnings)
+}
+
+fn group_surface_needs_guard(channel_id: &str) -> bool {
+    matches!(channel_id, "telegram" | "discord" | "slack" | "signal" | "whatsapp")
 }
 
 fn collect_browser_tool_warnings(
@@ -1279,6 +1316,64 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("does not exist yet")));
+    }
+
+    #[test]
+    fn collect_doctor_warnings_flags_inline_secrets_and_open_group_surface() {
+        let mut config = frankclaw_core::config::FrankClawConfig::default();
+        config.channels.insert(
+            ChannelId::new("discord"),
+            ChannelConfig {
+                enabled: true,
+                accounts: vec![serde_json::json!({
+                    "bot_token": "inline-secret"
+                })],
+                extra: serde_json::json!({
+                    "require_mention_for_groups": false
+                }),
+            },
+        );
+
+        let existing_state_dir = std::env::temp_dir().join(format!(
+            "frankclaw-cli-existing-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&existing_state_dir).expect("state dir should create");
+
+        let warnings = collect_doctor_warnings(&config, &existing_state_dir)
+            .expect("doctor warnings should collect");
+
+        assert!(warnings.iter().any(|warning| warning.contains("stores 'bot_token' inline")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("accepts group messages without mention gating")));
+
+        let _ = std::fs::remove_dir_all(existing_state_dir);
+    }
+
+    #[test]
+    fn supported_channel_examples_parse_as_json() {
+        let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/channels");
+
+        for filename in [
+            "web.json",
+            "telegram.json",
+            "discord.json",
+            "slack.json",
+            "signal.json",
+            "whatsapp.json",
+        ] {
+            let path = examples_dir.join(filename);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("failed to read {}: {}", path.display(), err));
+            serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|err| panic!("invalid JSON in {}: {}", path.display(), err));
+        }
     }
 
     #[test]

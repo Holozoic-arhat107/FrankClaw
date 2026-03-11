@@ -1,0 +1,16 @@
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "accounts": [
+        {
+          "bot_token_env": "TELEGRAM_BOT_TOKEN"
+        }
+      ],
+      "require_mention_for_groups": true,
+      "groups": [
+        "*"
+      ]
+    }
+  }
+}

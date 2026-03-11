@@ -1,0 +1,17 @@
+{
+  "channels": {
+    "signal": {
+      "enabled": true,
+      "accounts": [
+        {
+          "base_url_env": "SIGNAL_BASE_URL",
+          "account_env": "SIGNAL_ACCOUNT"
+        }
+      ],
+      "require_mention_for_groups": true,
+      "groups": [
+        "*"
+      ]
+    }
+  }
+}

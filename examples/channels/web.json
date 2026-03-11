@@ -1,0 +1,9 @@
+{
+  "channels": {
+    "web": {
+      "enabled": true,
+      "accounts": [],
+      "dm_policy": "open"
+    }
+  }
+}

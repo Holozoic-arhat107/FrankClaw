@@ -2,6 +2,7 @@
 
 This file is the practical setup companion to `README.md`.
 It focuses on supported surfaces only: current channels, model providers, and the Chromium browser runtime.
+Ready-to-merge snippets also live under `examples/channels/`.
 
 ## Baseline
 
