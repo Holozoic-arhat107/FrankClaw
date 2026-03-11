@@ -70,10 +70,9 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
   lifecycle tracking (pending → running → completed/failed/killed), push-based completion
   notification, and system prompt context injection. (`frankclaw-runtime/src/subagent.rs`)
 
-- [ ] **Auto-Reply Command System** — Structured command dispatch
-  OpenClaw has a full command detection, registry, and dispatch pipeline with heartbeat,
-  inbound debounce, group activation, thinking mode management, model directives, and block
-  streaming. FrankClaw has a simpler direct-to-model flow.
+- [x] **Auto-Reply Command System** — Prefix-based command detection (`/cmd`), alias resolution,
+  inline directive extraction (`/think`, `/model`), help generation, and dispatch pipeline
+  with bypass-model capability. (`frankclaw-runtime/src/commands.rs`)
 
 - [x] **System Prompt Construction** — Dynamic system prompt assembly from identity, user prompt,
   tool listing, skills, safety rules, and runtime metadata. (`frankclaw-runtime/src/lib.rs`)
@@ -255,7 +254,7 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
 ### Tier 2 — Advanced Agent Capabilities
 
 5. ~~Subagent system~~ ✅
-6. Auto-reply command system (richer interaction model)
+6. ~~Auto-reply command system~~ ✅
 7. ~~Model catalog/discovery~~ ✅
 8. Auth profile rotation (production reliability)
 
