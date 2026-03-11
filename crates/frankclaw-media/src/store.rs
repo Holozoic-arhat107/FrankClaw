@@ -239,6 +239,10 @@ fn read_metadata(path: &std::path::Path) -> Result<Option<MediaMetadata>> {
 
 /// Sanitize filename to prevent path traversal.
 /// Strips directory separators, leading dots, and limits length.
+/// Maximum length for sanitized filenames.
+/// On-disk files use UUID-based names; this limits the original_name metadata.
+const MAX_FILENAME_LEN: usize = 60;
+
 fn sanitize_filename(name: &str) -> String {
     // Take only the filename component (strip any directory path).
     let basename = name.rsplit(&['/', '\\']).next().unwrap_or(name);
@@ -246,10 +250,16 @@ fn sanitize_filename(name: &str) -> String {
     let cleaned: String = basename
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
-        .take(255)
+        .take(MAX_FILENAME_LEN)
         .collect();
     // Strip leading dots to prevent hidden files / traversal.
-    cleaned.trim_start_matches('.').to_string()
+    let result = cleaned.trim_start_matches('.').to_string();
+    // If nothing remains after sanitization, use a safe default.
+    if result.is_empty() {
+        "unnamed".to_string()
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +271,27 @@ mod tests {
         assert_eq!(sanitize_filename("../../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("normal-file.txt"), "normal-file.txt");
         assert_eq!(sanitize_filename("file with spaces.png"), "filewithspaces.png");
+    }
+
+    #[test]
+    fn sanitize_limits_filename_length() {
+        let long_name = "a".repeat(200) + ".txt";
+        let result = sanitize_filename(&long_name);
+        assert!(result.len() <= MAX_FILENAME_LEN);
+    }
+
+    #[test]
+    fn sanitize_handles_dots_only_filename() {
+        assert_eq!(sanitize_filename("..."), "unnamed");
+        assert_eq!(sanitize_filename("."), "unnamed");
+        assert_eq!(sanitize_filename("..hidden"), "hidden");
+    }
+
+    #[test]
+    fn sanitize_handles_empty_and_special_chars() {
+        assert_eq!(sanitize_filename(""), "unnamed");
+        assert_eq!(sanitize_filename("   "), "unnamed");
+        assert_eq!(sanitize_filename("!@#$%^&*()"), "unnamed");
     }
 
     #[test]

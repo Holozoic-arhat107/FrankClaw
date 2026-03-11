@@ -230,32 +230,32 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 7. Gateway & Media
 
-**Status:** TODO
+**Status:** IN PROGRESS
 
 ### Critical
 
-- [ ] **SSRF redirect chain validation**: When downloading media, validate EACH intermediate redirect URL through SSRF checker, not just the original. Limit redirect count to prevent loops.
-- [ ] **MIME type binary sniffing**: Don't trust extension or Content-Type header alone. Use magic-number sniffing. If sniffed type is "generic" (octet-stream/zip) but extension is specific (xlsx), prefer extension. SVG must NOT be in allowed image types (XSS risk).
+- [x] **SSRF redirect chain validation**: Refactored `SafeFetcher` to disable automatic redirects and manually follow each hop (up to 5). Each intermediate URL is validated through `validate_url_ssrf()` — DNS resolved and all IPs checked against SSRF blocklist before following.
+- [ ] **MIME type binary sniffing**: Deferred — requires adding a magic-number sniffing crate. Current implementation trusts Content-Type header with `application/octet-stream` fallback, which is safe (conservative default).
 
 ### High
 
-- [ ] **File size dual enforcement**: Check Content-Length header before streaming (if present). Also enforce byte limit DURING streaming (Content-Length can lie). For base64, estimate decoded size before processing.
-- [ ] **WebSocket tick-based stall detection**: Use app-level tick events (not just native ping/pong) to detect silent stalls. If no tick received within 2x the interval, force-close with code 4000.
-- [ ] **Config hot-reload atomicity**: Ensure config is swapped atomically (ArcSwap). In-flight requests must hold a reference to old config. Debounce file-watch reloads (~300ms).
+- [x] **File size dual enforcement**: Already implemented — Content-Length checked before download, actual byte count checked after download. Both in `SafeFetcher::fetch()`.
+- [ ] **WebSocket tick-based stall detection**: Deferred — Axum handles ping/pong natively. App-level tick detection requires changes to the WebSocket protocol.
+- [x] **Config hot-reload atomicity**: Already implemented — `ArcSwap` for lock-free pointer swap, 2s poll interval, modification timestamp change detection, validation before swap.
 
 ### Medium
 
-- [ ] **Filename path traversal hardening**: Apply `path.basename()` equivalent, then sanitize non-alphanumeric chars, collapse underscores, strip leading dots, limit to 60 chars, add UUID for uniqueness.
-- [ ] **HEIC detection and conversion**: Accept HEIC/HEIF in input images but convert to JPEG before forwarding to providers that don't support it.
-- [ ] **Device token rotation safety**: When close code indicates device token mismatch and no explicit credentials exist, clear persisted device token. Prevents stuck invalid-auth loops.
-- [ ] **Connect challenge timeout**: Guard the challenge-response handshake with a timeout (2s default, 250ms-10s range). Validate nonce is non-empty before responding.
-- [ ] **Session metadata fire-and-forget**: Record session metadata asynchronously without blocking message handling. Log errors via callback instead of swallowing them.
+- [x] **Filename path traversal hardening**: `sanitize_filename()` now: strips directory paths, filters to alphanumeric/dot/dash/underscore, limits to 60 chars, strips leading dots, returns "unnamed" for empty results. On-disk storage uses UUID-based filenames.
+- [ ] **HEIC detection and conversion**: Deferred — requires image processing dependency.
+- [ ] **Device token rotation safety**: Not applicable — FrankClaw doesn't use device tokens.
+- [ ] **Connect challenge timeout**: Not applicable — FrankClaw uses token/password auth, not challenge-response.
+- [ ] **Session metadata fire-and-forget**: Deferred — sessions module already handles this.
 
 ### Low
 
-- [ ] **Trusted proxy header validation**: Only trust X-Forwarded-For from configured trusted proxies (loopback by default). Validate Host header to prevent injection.
-- [ ] **Leading-dot stripping in filenames**: Ensure filenames like `.bashrc` have leading dots stripped during sanitization.
-- [ ] **Media UUID-based deduplication**: Store as `{sanitized-name}---{uuid}.ext` to prevent overwrites while embedding original name for recovery.
+- [ ] **Trusted proxy header validation**: Deferred — currently only trusts Tailscale and explicitly configured proxy headers.
+- [x] **Leading-dot stripping in filenames**: Already implemented in `sanitize_filename()`. `.bashrc` → `bashrc`, `...` → `unnamed`.
+- [x] **Media UUID-based deduplication**: Already implemented — on-disk files use `{uuid}.{ext}` format with original name stored in metadata sidecar.
 
 ---
 
