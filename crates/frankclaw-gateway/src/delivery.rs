@@ -1219,4 +1219,86 @@ mod tests {
         assert_eq!(delivery.attempts, 1);
         assert_eq!(channel.sent.lock().await.len(), 1);
     }
+
+    #[tokio::test]
+    async fn deliver_multi_chunk_stops_on_first_failure_and_records_partial_chunks() {
+        let channel = Arc::new(SequenceChannel::new(vec![
+            Ok(SendResult::Sent {
+                platform_message_id: "chunk-1".into(),
+            }),
+            Ok(SendResult::Failed {
+                reason: "channel_not_found".into(),
+            }),
+        ]));
+
+        let mut attachments = Vec::new();
+        for index in 0..2 {
+            attachments.push(OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "image/png".into(),
+                filename: Some(format!("photo-{index}.png")),
+                url: None,
+                bytes: b"png".to_vec(),
+            });
+        }
+
+        let outbound = OutboundMessage {
+            channel: ChannelId::new("whatsapp"),
+            account_id: "default".into(),
+            to: "15550001111".into(),
+            thread_id: None,
+            text: "see attached".into(),
+            attachments,
+            reply_to: None,
+        };
+
+        let delivery = deliver_outbound_message(channel.clone(), outbound, None)
+            .await
+            .expect("delivery should return a record");
+
+        assert_eq!(delivery.status, "failed");
+        assert_eq!(delivery.chunks.len(), 2);
+        assert_eq!(delivery.chunks[0].status, "sent");
+        assert_eq!(delivery.chunks[1].status, "failed");
+        assert_eq!(
+            delivery.chunks[1].error.as_deref(),
+            Some("channel_not_found")
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_rate_limited_chunk_retries_then_succeeds() {
+        let channel = Arc::new(SequenceChannel::new(vec![
+            Ok(SendResult::RateLimited {
+                retry_after_secs: Some(1),
+            }),
+            Ok(SendResult::RateLimited {
+                retry_after_secs: Some(1),
+            }),
+            Ok(SendResult::Sent {
+                platform_message_id: "after-retry".into(),
+            }),
+        ]));
+
+        let outbound = OutboundMessage {
+            channel: ChannelId::new("slack"),
+            account_id: "default".into(),
+            to: "channel-1".into(),
+            thread_id: None,
+            text: "hello".into(),
+            attachments: Vec::new(),
+            reply_to: None,
+        };
+
+        let delivery = deliver_outbound_message(channel.clone(), outbound, None)
+            .await
+            .expect("delivery should succeed");
+
+        assert_eq!(delivery.status, "sent");
+        assert_eq!(delivery.attempts, 3);
+        assert_eq!(
+            delivery.platform_message_id.as_deref(),
+            Some("after-retry")
+        );
+    }
 }

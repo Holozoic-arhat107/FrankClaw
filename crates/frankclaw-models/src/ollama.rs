@@ -1,16 +1,21 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use tracing::debug;
 
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::model::*;
 
+use crate::openai_compat::{self, StreamState};
+use crate::sse::SseDecoder;
+
 const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
 /// Ollama local model provider.
 ///
 /// Ollama runs on localhost and requires no API key.
-/// This is the most private option — all inference stays on-device.
+/// Uses the OpenAI-compatible `/v1/chat/completions` endpoint,
+/// which supports SSE streaming in the same format as OpenAI.
 pub struct OllamaProvider {
     id: String,
     client: Client,
@@ -41,31 +46,15 @@ impl ModelProvider for OllamaProvider {
     async fn complete(
         &self,
         request: CompletionRequest,
-        _stream_tx: Option<tokio::sync::mpsc::Sender<StreamDelta>>,
+        stream_tx: Option<tokio::sync::mpsc::Sender<StreamDelta>>,
     ) -> Result<CompletionResponse> {
-        // Use Ollama's OpenAI-compatible endpoint.
-        let messages: Vec<serde_json::Value> = {
-            let mut msgs = Vec::new();
-            if let Some(system) = &request.system {
-                msgs.push(serde_json::json!({
-                    "role": "system",
-                    "content": system,
-                }));
-            }
-            for msg in &request.messages {
-                msgs.push(serde_json::json!({
-                    "role": msg.role,
-                    "content": msg.content,
-                }));
-            }
-            msgs
-        };
+        let mut body = openai_compat::build_request_body(&request);
 
-        let body = serde_json::json!({
-            "model": request.model_id,
-            "messages": messages,
-            "stream": false,
-        });
+        if stream_tx.is_some() {
+            body["stream"] = serde_json::json!(true);
+        } else {
+            body["stream"] = serde_json::json!(false);
+        }
 
         let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
         debug!(url, model = %request.model_id, "sending ollama request");
@@ -88,23 +77,45 @@ impl ModelProvider for OllamaProvider {
             });
         }
 
-        let data: serde_json::Value = response.json().await.map_err(|e| {
-            FrankClawError::ModelProvider {
-                msg: format!("invalid ollama response: {e}"),
+        if let Some(stream_tx) = stream_tx {
+            let mut decoder = SseDecoder::default();
+            let mut state = StreamState::default();
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| FrankClawError::ModelProvider {
+                    msg: format!("failed to read ollama streaming response: {e}"),
+                })?;
+                for event in decoder.push(chunk.as_ref()) {
+                    for delta in openai_compat::apply_stream_event(&mut state, &event.data)? {
+                        let _ = stream_tx.send(delta).await;
+                    }
+                    if state.done {
+                        break;
+                    }
+                }
+                if state.done {
+                    break;
+                }
             }
-        })?;
+            if !state.done && let Some(event) = decoder.finish() {
+                for delta in openai_compat::apply_stream_event(&mut state, &event.data)? {
+                    let _ = stream_tx.send(delta).await;
+                }
+            }
+            let response = state.finish()?;
+            let _ = stream_tx
+                .send(StreamDelta::Done {
+                    usage: Some(response.usage.clone()),
+                })
+                .await;
+            return Ok(response);
+        }
 
-        let content = data["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-
-        Ok(CompletionResponse {
-            content,
-            tool_calls: vec![],
-            usage: Usage::default(),
-            finish_reason: FinishReason::Stop,
-        })
+        let data: serde_json::Value =
+            response.json().await.map_err(|e| FrankClawError::ModelProvider {
+                msg: format!("invalid ollama response: {e}"),
+            })?;
+        openai_compat::parse_completion_response(&data)
     }
 
     async fn list_models(&self) -> Result<Vec<ModelDef>> {
@@ -136,7 +147,11 @@ impl ModelProvider for OllamaProvider {
                             cost: ModelCost::default(),
                             context_window: 8192,
                             max_output_tokens: 4096,
-                            compat: ModelCompat::default(),
+                            compat: ModelCompat {
+                                supports_streaming: true,
+                                supports_system_message: true,
+                                ..Default::default()
+                            },
                         })
                     })
                     .collect()

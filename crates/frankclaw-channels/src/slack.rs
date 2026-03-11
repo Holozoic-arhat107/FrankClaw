@@ -169,74 +169,105 @@ impl SlackChannel {
         let (channel_id, thread_ts) = parse_thread_target(msg.thread_id.as_deref(), &msg.to);
         let thread_ts = thread_ts.or_else(|| msg.reply_to.clone());
         let mut files = Vec::with_capacity(msg.attachments.len());
+        let total_attachments = msg.attachments.len();
 
         for attachment in &msg.attachments {
             let filename = attachment_filename(attachment);
             let bytes = attachment_bytes(&self.id(), attachment)?;
-            let ticket_resp = self
-                .client
-                .post(format!("{SLACK_API_BASE}/files.getUploadURLExternal"))
-                .header("authorization", self.bot_auth_header())
-                .json(&build_upload_ticket_request(&filename, bytes.len()))
-                .send()
-                .await
-                .map_err(|e| FrankClawError::Channel {
-                    channel: self.id(),
-                    msg: format!("slack upload ticket request failed: {e}"),
-                })?;
-            let ticket: serde_json::Value = ticket_resp.json().await.map_err(|e| FrankClawError::Channel {
-                channel: self.id(),
-                msg: format!("invalid slack upload ticket response: {e}"),
-            })?;
-            if ticket["ok"].as_bool() != Some(true) {
-                return Ok(SendResult::Failed {
-                    reason: ticket["error"]
-                        .as_str()
-                        .unwrap_or("unknown slack upload ticket failure")
-                        .to_string(),
-                });
-            }
+            let ticket_result = self.upload_single_file(&filename, bytes).await;
 
-            let upload_url = ticket["upload_url"].as_str().ok_or_else(|| FrankClawError::Channel {
-                channel: self.id(),
-                msg: "slack upload ticket response missing upload_url".into(),
-            })?;
-            let file_id = ticket["file_id"].as_str().ok_or_else(|| FrankClawError::Channel {
-                channel: self.id(),
-                msg: "slack upload ticket response missing file_id".into(),
-            })?;
-            let upload_resp = self
-                .client
-                .post(upload_url)
-                .header("content-type", "application/octet-stream")
-                .body(bytes)
-                .send()
-                .await
-                .map_err(|e| FrankClawError::Channel {
-                    channel: self.id(),
-                    msg: format!("slack external upload failed: {e}"),
-                })?;
-            if !upload_resp.status().is_success() {
-                return Ok(SendResult::Failed {
-                    reason: format!("slack external upload returned HTTP {}", upload_resp.status()),
-                });
+            match ticket_result {
+                Ok(file_entry) => files.push(file_entry),
+                Err(reason) => {
+                    if files.is_empty() {
+                        return Ok(SendResult::Failed { reason });
+                    }
+                    warn!(
+                        uploaded = files.len(),
+                        total = total_attachments,
+                        error = %reason,
+                        "slack partial upload failure, completing with uploaded files"
+                    );
+                    break;
+                }
             }
-
-            files.push(serde_json::json!({
-                "id": file_id,
-                "title": filename,
-            }));
         }
 
+        self.complete_file_upload(files, &channel_id, thread_ts.as_deref(), &msg.text)
+            .await
+    }
+
+    async fn upload_single_file(
+        &self,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let ticket_resp = self
+            .client
+            .post(format!("{SLACK_API_BASE}/files.getUploadURLExternal"))
+            .header("authorization", self.bot_auth_header())
+            .json(&build_upload_ticket_request(filename, bytes.len()))
+            .send()
+            .await
+            .map_err(|e| format!("slack upload ticket request failed: {e}"))?;
+
+        let ticket: serde_json::Value = ticket_resp
+            .json()
+            .await
+            .map_err(|e| format!("invalid slack upload ticket response: {e}"))?;
+
+        if ticket["ok"].as_bool() != Some(true) {
+            return Err(ticket["error"]
+                .as_str()
+                .unwrap_or("unknown slack upload ticket failure")
+                .to_string());
+        }
+
+        let upload_url = ticket["upload_url"]
+            .as_str()
+            .ok_or_else(|| "slack upload ticket response missing upload_url".to_string())?;
+        let file_id = ticket["file_id"]
+            .as_str()
+            .ok_or_else(|| "slack upload ticket response missing file_id".to_string())?;
+
+        let upload_resp = self
+            .client
+            .post(upload_url)
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| format!("slack external upload failed: {e}"))?;
+
+        if !upload_resp.status().is_success() {
+            return Err(format!(
+                "slack external upload returned HTTP {}",
+                upload_resp.status()
+            ));
+        }
+
+        Ok(serde_json::json!({
+            "id": file_id,
+            "title": filename,
+        }))
+    }
+
+    async fn complete_file_upload(
+        &self,
+        files: Vec<serde_json::Value>,
+        channel_id: &str,
+        thread_ts: Option<&str>,
+        text: &str,
+    ) -> Result<SendResult> {
         let complete_resp = self
             .client
             .post(format!("{SLACK_API_BASE}/files.completeUploadExternal"))
             .header("authorization", self.bot_auth_header())
             .json(&build_complete_upload_request(
                 files,
-                &channel_id,
-                thread_ts.as_deref(),
-                &msg.text,
+                channel_id,
+                thread_ts,
+                text,
             ))
             .send()
             .await
@@ -256,10 +287,11 @@ impl SlackChannel {
             });
         }
 
-        let complete_body: serde_json::Value = complete_resp.json().await.map_err(|e| FrankClawError::Channel {
-            channel: self.id(),
-            msg: format!("invalid slack complete upload response: {e}"),
-        })?;
+        let complete_body: serde_json::Value =
+            complete_resp.json().await.map_err(|e| FrankClawError::Channel {
+                channel: self.id(),
+                msg: format!("invalid slack complete upload response: {e}"),
+            })?;
         if complete_body["ok"].as_bool() == Some(true) {
             let platform_message_id = complete_body["files"]
                 .as_array()

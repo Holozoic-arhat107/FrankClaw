@@ -53,12 +53,18 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 ### Rich Channel Behavior
 
 - [ ] Rich attachment/media handling across supported channels
-  Current slice: authenticated web media upload/download, console upload flow, attachment-capable web inbound turns, gateway-side attachment hydration from stored media, outbound media send flows for Telegram, Discord, Slack, Signal, and WhatsApp, central batching for WhatsApp single-media sends, Telegram media-group support for mixed photo/video albums plus same-type audio/document albums, richer web-console attachment previews, transcript-side attachment metadata for stored history, and shared inbound MIME inference when platforms omit attachment content types. Remaining depth is mostly the long tail of platform-specific media edge cases.
+  Current slice: authenticated web media upload/download, console upload flow, attachment-capable web inbound turns, gateway-side attachment hydration from stored media, outbound media send flows for Telegram, Discord, Slack, Signal, and WhatsApp, central batching for WhatsApp single-media sends, Telegram media-group support for mixed photo/video albums plus same-type audio/document albums, richer web-console attachment previews, transcript-side attachment metadata for stored history, and shared inbound MIME inference when platforms omit attachment content types.
+  Still missing:
+  - platform-specific media edge cases outside the current happy paths
+  - ~~richer partial-failure and retry handling when multi-attachment sends are only partly accepted by a platform~~ (done: Slack completes successfully uploaded files when a later upload fails)
+  - deeper WhatsApp media semantics beyond the current Cloud API text/media normalization path
+  - live external-platform smoke coverage for media-heavy flows
 - [x] Broader edit support beyond Telegram
 - [x] Delete support where platforms allow it
 - [x] Shared outbound text normalization and reply-safe formatting
 - [x] Channel-specific streaming or pseudo-streaming delivery
 - [x] Provider SSE streaming for OpenAI/Anthropic-backed chat turns
+- [x] Provider SSE streaming for other configured providers (Ollama now streams via OpenAI-compatible SSE)
 - [x] Explicit group allowlist routing on supported group-capable channels
 - [x] Better reply-tag semantics across supported channels
 - [x] Better WhatsApp-specific behavior beyond normalized inbound media/webhook handling and safer outbound text shaping
@@ -110,6 +116,15 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 - [x] Unit coverage for bounded Canvas component blocks
 - [x] Coverage for onboarding/install helpers
 - [x] Regression-focused tests for delivery metadata and session rewrites
+- [ ] Live smoke coverage against real external platforms
+- [x] More media-specific failure-path coverage for partial multi-attachment delivery
+
+### Not Implemented Yet in the Current Direction
+
+- [ ] Sandboxed agent runtime execution surface
+- [ ] Vector memory backend
+- [x] Provider SSE streaming outside the current OpenAI/Anthropic path (Ollama)
+- [ ] Remaining long-tail media/channel edge cases listed above
 
 ### Still Missing OpenClaw Breadth
 
@@ -134,14 +149,15 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 ## Explicitly Lower Priority Right Now
 
 - Wider long-tail channel parity
+- Sandboxed agent runtime
+- Vector memory backend
 - Companion node/app surfaces
 - Voice
 - Distro-specific installers
 
 ## Near-Term Priority Order
 
-1. Increase test coverage and test quality.
-2. Improve rich behavior on already-supported channels.
-3. Deepen Canvas into a structured, session-aware host surface.
-4. Add browser automation as the first higher-risk tool family.
-5. Improve operator/install quality with Docker support and better setup docs.
+1. Finish the remaining long-tail media/channel edge cases on supported channels.
+2. Add more live-ish test coverage for real external platform behavior.
+3. Keep sandboxed agent runtime on the deferred list until the current surface stops moving.
+4. Keep vector memory backend on the deferred list until the runtime/tool surface settles.

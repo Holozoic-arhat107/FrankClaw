@@ -2,6 +2,7 @@
 
 mod failover;
 mod openai;
+mod openai_compat;
 mod anthropic;
 mod ollama;
 mod sse;
