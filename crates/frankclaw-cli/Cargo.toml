@@ -31,3 +31,4 @@ base64 = { workspace = true }
 dirs = { workspace = true }
 secrecy = { workspace = true }
 anyhow = { workspace = true }
+url = { workspace = true }

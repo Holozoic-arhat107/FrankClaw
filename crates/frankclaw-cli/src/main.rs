@@ -782,8 +782,73 @@ fn collect_doctor_warnings(
 
     let exposure = frankclaw_gateway::auth::assess_exposure(config)?;
     warnings.extend(exposure.warnings);
+    warnings.extend(collect_browser_tool_warnings(
+        config,
+        std::env::var("FRANKCLAW_BROWSER_DEVTOOLS_URL").ok().as_deref(),
+    ));
 
     Ok(warnings)
+}
+
+fn collect_browser_tool_warnings(
+    config: &frankclaw_core::config::FrankClawConfig,
+    browser_endpoint: Option<&str>,
+) -> Vec<String> {
+    let browser_tools_enabled = config
+        .agents
+        .agents
+        .values()
+        .flat_map(|agent| agent.tools.iter())
+        .any(|tool| matches!(
+            tool.as_str(),
+            "browser.open" | "browser.extract" | "browser.snapshot"
+        ));
+    if !browser_tools_enabled {
+        return Vec::new();
+    }
+
+    let endpoint = browser_endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:9222/");
+    let parsed = match url::Url::parse(endpoint) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return vec![format!(
+                "browser tools are enabled but FRANKCLAW_BROWSER_DEVTOOLS_URL is invalid: {}",
+                err
+            )];
+        }
+    };
+
+    let mut warnings = Vec::new();
+    match parsed.host_str() {
+        Some("127.0.0.1") | Some("localhost") => {}
+        Some(other) => warnings.push(format!(
+            "browser tools are pointed at non-loopback host '{}'; keep Chromium DevTools local-only",
+            other
+        )),
+        None => warnings.push("browser tools endpoint has no host".into()),
+    }
+
+    let port = parsed.port_or_known_default().unwrap_or(9222);
+    let Some(host) = parsed.host_str() else {
+        return warnings;
+    };
+    match std::net::TcpStream::connect_timeout(
+        &format!("{host}:{port}")
+            .parse()
+            .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port))),
+        std::time::Duration::from_millis(250),
+    ) {
+        Ok(_) => {}
+        Err(_) => warnings.push(format!(
+            "browser tools are enabled but Chromium DevTools is unreachable at {}; start it locally or run `docker compose up -d chromium`",
+            endpoint
+        )),
+    }
+
+    warnings
 }
 
 fn read_password() -> anyhow::Result<secrecy::SecretString> {
@@ -1046,6 +1111,26 @@ mod tests {
             .expect_err("unsupported channel should fail");
 
         assert!(err.to_string().contains("unsupported onboard channel"));
+    }
+
+    #[test]
+    fn collect_browser_tool_warnings_flags_unreachable_non_loopback_devtools() {
+        let mut config = frankclaw_core::config::FrankClawConfig::default();
+        config
+            .agents
+            .agents
+            .get_mut(&frankclaw_core::types::AgentId::default_agent())
+            .expect("default agent should exist")
+            .tools = vec!["browser.open".into()];
+
+        let warnings = collect_browser_tool_warnings(&config, Some("http://10.0.0.8:6553/"));
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("non-loopback host")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("docker compose up -d chromium")));
     }
 }
 
