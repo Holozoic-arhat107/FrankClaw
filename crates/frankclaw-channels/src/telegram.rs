@@ -8,6 +8,10 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
 use crate::media_text::text_or_attachment_placeholder;
+use crate::outbound_media::{
+    AttachmentKind, attachment_bytes, attachment_filename, attachment_kind,
+    require_single_attachment,
+};
 use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
@@ -246,18 +250,25 @@ impl ChannelPlugin for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
-        let body = build_send_body(&msg);
-
-        let resp = self
-            .client
-            .post(self.api_url("sendMessage"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| FrankClawError::Channel {
-                channel: self.id(),
-                msg: format!("send failed: {e}"),
-            })?;
+        let resp = if msg.attachments.is_empty() {
+            let body = build_send_body(&msg);
+            self.client
+                .post(self.api_url("sendMessage"))
+                .json(&body)
+                .send()
+                .await
+        } else {
+            let request = build_media_send_request(&msg)?;
+            self.client
+                .post(self.api_url(request.method))
+                .multipart(request.form)
+                .send()
+                .await
+        }
+        .map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("send failed: {e}"),
+        })?;
 
         let data: serde_json::Value = resp.json().await.map_err(|e| {
             FrankClawError::Channel {
@@ -432,6 +443,57 @@ fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
     body
 }
 
+#[derive(Debug)]
+struct TelegramMediaRequest {
+    method: &'static str,
+    form: reqwest::multipart::Form,
+}
+
+fn build_media_send_request(msg: &OutboundMessage) -> Result<TelegramMediaRequest> {
+    let channel = ChannelId::new("telegram");
+    let attachment = require_single_attachment(&channel, &msg.attachments)?;
+    let bytes = attachment_bytes(&channel, attachment)?;
+    let filename = attachment_filename(attachment);
+    let (chat_id, topic_id) = parse_target_thread(msg.thread_id.as_deref(), &msg.to);
+    let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::Plain);
+
+    let (method, field_name) = match attachment_kind(&attachment.mime_type) {
+        AttachmentKind::Image => ("sendPhoto", "photo"),
+        AttachmentKind::Audio => ("sendAudio", "audio"),
+        AttachmentKind::Video => ("sendVideo", "video"),
+        AttachmentKind::Document => ("sendDocument", "document"),
+    };
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename)
+        .mime_str(&attachment.mime_type)
+        .map_err(|e| FrankClawError::Channel {
+            channel,
+            msg: format!("invalid attachment mime type: {e}"),
+        })?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id)
+        .part(field_name.to_string(), part);
+
+    if !text.is_empty() {
+        form = form.text("caption", text);
+        form = form.text("parse_mode", "Markdown");
+    }
+    if let Some(topic_id) = topic_id {
+        form = form.text("message_thread_id", topic_id.to_string());
+    }
+    if let Some(reply_to) = msg
+        .reply_to
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        form = form.text("reply_to_message_id", reply_to.to_string());
+    }
+
+    Ok(TelegramMediaRequest { method, form })
+}
+
 fn build_edit_body(target: &EditMessageTarget, new_text: &str) -> Result<serde_json::Value> {
     let (chat_id, _) = parse_target_thread(target.thread_id.as_deref(), &target.to);
     let text = normalize_outbound_text(new_text, OutboundTextFlavor::Plain);
@@ -482,6 +544,16 @@ fn parse_target_thread(thread_id: Option<&str>, fallback_to: &str) -> (String, O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(name: &str) -> serde_json::Value {
+        match name {
+            "message_with_photo" => serde_json::from_str(include_str!(
+                "fixture_telegram_message_with_photo.json"
+            ))
+            .expect("fixture should parse"),
+            _ => panic!("unknown fixture: {name}"),
+        }
+    }
 
     #[test]
     fn parse_message_uses_topic_thread_id_when_present() {
@@ -571,6 +643,50 @@ mod tests {
     }
 
     #[test]
+    fn build_media_send_request_uses_photo_method_for_images() {
+        let request = build_media_send_request(&OutboundMessage {
+            channel: ChannelId::new("telegram"),
+            account_id: "default".into(),
+            to: "42".into(),
+            thread_id: None,
+            text: "caption".into(),
+            attachments: vec![OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "image/png".into(),
+                filename: Some("photo.png".into()),
+                url: None,
+                bytes: b"png".to_vec(),
+            }],
+            reply_to: Some("77".into()),
+        })
+        .expect("media send request should build");
+
+        assert_eq!(request.method, "sendPhoto");
+    }
+
+    #[test]
+    fn build_media_send_request_rejects_missing_bytes() {
+        let err = build_media_send_request(&OutboundMessage {
+            channel: ChannelId::new("telegram"),
+            account_id: "default".into(),
+            to: "42".into(),
+            thread_id: None,
+            text: "caption".into(),
+            attachments: vec![OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "image/png".into(),
+                filename: Some("photo.png".into()),
+                url: None,
+                bytes: Vec::new(),
+            }],
+            reply_to: None,
+        })
+        .expect_err("missing bytes should fail");
+
+        assert!(err.to_string().contains("missing inline bytes"));
+    }
+
+    #[test]
     fn build_edit_body_uses_thread_target_chat_id() {
         let body = build_edit_body(
             &EditMessageTarget {
@@ -657,5 +773,20 @@ mod tests {
         assert_eq!(inbound.text.as_deref(), Some("<media:audio>"));
         assert_eq!(inbound.attachments.len(), 1);
         assert_eq!(inbound.attachments[0].mime_type, "audio/ogg");
+    }
+
+    #[test]
+    fn parse_message_matches_contract_fixture_shape() {
+        let channel = TelegramChannel::new(SecretString::from("token".to_string()));
+        let inbound = channel
+            .parse_message(&fixture("message_with_photo"))
+            .expect("fixture should parse");
+
+        assert_eq!(inbound.channel.as_str(), "telegram");
+        assert_eq!(inbound.thread_id.as_deref(), Some("-100123:topic:7"));
+        assert_eq!(inbound.text.as_deref(), Some("look"));
+        assert_eq!(inbound.attachments.len(), 1);
+        assert_eq!(inbound.attachments[0].mime_type, "image/jpeg");
+        assert_eq!(inbound.attachments[0].size_bytes, Some(1024));
     }
 }

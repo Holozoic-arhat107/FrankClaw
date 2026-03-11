@@ -579,6 +579,16 @@ fn timestamp_millis(value: i64) -> Option<chrono::DateTime<chrono::Utc>> {
 mod tests {
     use super::*;
 
+    fn fixture(name: &str) -> serde_json::Value {
+        match name {
+            "receive_attachment" => serde_json::from_str(include_str!(
+                "fixture_signal_receive_attachment.json"
+            ))
+            .expect("fixture should parse"),
+            _ => panic!("unknown fixture: {name}"),
+        }
+    }
+
     #[test]
     fn sse_parser_merges_multiline_events() {
         let mut parser = SignalSseParser::default();
@@ -698,5 +708,25 @@ mod tests {
         );
 
         assert_eq!(body["params"]["message"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn parse_receive_event_matches_contract_fixture_shape() {
+        let inbound = parse_receive_event(
+            &SignalSseEvent {
+                event: Some("message".into()),
+                data: Some(fixture("receive_attachment").to_string()),
+                id: None,
+            },
+            Some("+15551234567"),
+        )
+        .expect("fixture should parse");
+
+        assert_eq!(inbound.channel.as_str(), "signal");
+        assert_eq!(inbound.sender_id, "+15550001111");
+        assert_eq!(inbound.thread_id.as_deref(), Some("group:group-42"));
+        assert_eq!(inbound.text.as_deref(), Some("photo"));
+        assert_eq!(inbound.attachments.len(), 1);
+        assert_eq!(inbound.attachments[0].mime_type, "image/png");
     }
 }

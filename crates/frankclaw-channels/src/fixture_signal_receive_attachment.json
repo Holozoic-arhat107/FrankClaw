@@ -1,0 +1,25 @@
+{
+  "envelope": {
+    "sourceNumber": "+15550001111",
+    "sourceName": "Alice",
+    "timestamp": 1710000000123,
+    "dataMessage": {
+      "message": "photo",
+      "attachments": [
+        {
+          "contentType": "image/png",
+          "filename": "photo.png",
+          "size": 42
+        }
+      ],
+      "mentions": [
+        {
+          "number": "+15551234567"
+        }
+      ],
+      "groupInfo": {
+        "groupId": "group-42"
+      }
+    }
+  }
+}

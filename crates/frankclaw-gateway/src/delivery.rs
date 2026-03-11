@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use frankclaw_core::channel::{ChannelPlugin, OutboundMessage, SendResult};
-use frankclaw_core::error::Result;
+use frankclaw_core::error::{FrankClawError, Result};
+use frankclaw_media::MediaStore;
 use serde::{Deserialize, Serialize};
 
 use crate::audit::{log_event, log_failure};
@@ -65,7 +66,9 @@ pub struct StoredReplyMetadata {
 pub(crate) async fn deliver_outbound_message(
     channel: Arc<dyn ChannelPlugin>,
     outbound: OutboundMessage,
+    media: Option<&MediaStore>,
 ) -> Result<DeliveryRecord> {
+    let outbound = hydrate_outbound_attachments(outbound, media)?;
     let capabilities = channel.capabilities();
     let outbound_chunks = split_outbound_message(&outbound);
     let chunk_count = outbound_chunks.len();
@@ -109,6 +112,38 @@ pub(crate) async fn deliver_outbound_message(
         error: None,
         chunks,
     })
+}
+
+fn hydrate_outbound_attachments(
+    mut outbound: OutboundMessage,
+    media: Option<&MediaStore>,
+) -> Result<OutboundMessage> {
+    let Some(media) = media else {
+        return Ok(outbound);
+    };
+
+    for attachment in &mut outbound.attachments {
+        if attachment.has_inline_bytes() {
+            continue;
+        }
+        let stored = media
+            .read(&attachment.media_id)?
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: format!("missing outbound media {}", attachment.media_id),
+            })?;
+        attachment.bytes = stored.bytes;
+        if attachment.filename.is_none() {
+            attachment.filename = Some(stored.filename);
+        }
+        if attachment.url.is_none() {
+            attachment.url = Some(format!("/api/media/{}", attachment.media_id));
+        }
+        if attachment.mime_type.trim().is_empty() {
+            attachment.mime_type = stored.mime_type;
+        }
+    }
+
+    Ok(outbound)
 }
 
 async fn send_outbound_chunk(
@@ -576,6 +611,7 @@ mod tests {
     use async_trait::async_trait;
     use frankclaw_core::types::ChannelId;
     use frankclaw_core::channel::{ChannelCapabilities, EditMessageTarget, StreamHandle};
+    use frankclaw_media::MediaStore;
     use std::collections::VecDeque;
 
     struct CaptureChannel {
@@ -784,6 +820,51 @@ mod tests {
         assert_eq!(chunks, vec!["one two", "three", "four five"]);
     }
 
+    #[test]
+    fn hydrate_outbound_attachments_loads_bytes_from_media_store() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-delivery-media-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let media = MediaStore::new(temp_dir.clone(), 1024 * 1024, 1)
+            .expect("media store should create");
+        let stored = media
+            .store("report.pdf", "application/pdf", b"%PDF-1.4")
+            .expect("media should store");
+
+        let outbound = hydrate_outbound_attachments(
+            OutboundMessage {
+                channel: ChannelId::new("discord"),
+                account_id: "default".into(),
+                to: "channel-1".into(),
+                thread_id: None,
+                text: "see attached".into(),
+                attachments: vec![frankclaw_core::channel::OutboundAttachment {
+                    media_id: stored.id.clone(),
+                    mime_type: String::new(),
+                    filename: None,
+                    url: None,
+                    bytes: Vec::new(),
+                }],
+                reply_to: None,
+            },
+            Some(&media),
+        )
+        .expect("hydration should succeed");
+
+        assert_eq!(outbound.attachments.len(), 1);
+        assert_eq!(outbound.attachments[0].bytes, b"%PDF-1.4");
+        assert!(
+            outbound.attachments[0]
+                .filename
+                .as_deref()
+                .is_some_and(|value| value.ends_with(".pdf"))
+        );
+        assert_eq!(outbound.attachments[0].mime_type, "application/pdf");
+        let expected_url = format!("/api/media/{}", stored.id);
+        assert_eq!(outbound.attachments[0].url.as_deref(), Some(expected_url.as_str()));
+    }
+
     #[tokio::test]
     async fn deliver_outbound_message_splits_long_discord_messages() {
         let channel = Arc::new(CaptureChannel::new());
@@ -797,7 +878,7 @@ mod tests {
             reply_to: None,
         };
 
-        let delivery = deliver_outbound_message(channel.clone(), outbound)
+        let delivery = deliver_outbound_message(channel.clone(), outbound, None)
             .await
             .expect("delivery should succeed");
         let sent = channel.drain().await;
@@ -821,7 +902,7 @@ mod tests {
             reply_to: Some("incoming-42".into()),
         };
 
-        deliver_outbound_message(channel.clone(), outbound)
+        deliver_outbound_message(channel.clone(), outbound, None)
             .await
             .expect("delivery should succeed");
         let sent = channel.drain().await;
@@ -844,7 +925,7 @@ mod tests {
             reply_to: Some("incoming-1".into()),
         };
 
-        let delivery = deliver_outbound_message(channel.clone(), outbound.clone())
+        let delivery = deliver_outbound_message(channel.clone(), outbound.clone(), None)
             .await
             .expect("delivery should succeed");
         let sent = channel.sent().await;
@@ -880,7 +961,7 @@ mod tests {
             reply_to: None,
         };
 
-        let delivery = deliver_outbound_message(channel.clone(), outbound)
+        let delivery = deliver_outbound_message(channel.clone(), outbound, None)
             .await
             .expect("delivery should succeed");
 
@@ -904,7 +985,7 @@ mod tests {
             reply_to: None,
         };
 
-        let delivery = deliver_outbound_message(channel.clone(), outbound)
+        let delivery = deliver_outbound_message(channel.clone(), outbound, None)
             .await
             .expect("delivery should return a terminal failed record");
 

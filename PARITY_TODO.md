@@ -53,7 +53,7 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 ### Rich Channel Behavior
 
 - [ ] Rich attachment/media handling across supported channels
-  Current slice: authenticated web media upload/download, console upload flow, and attachment-capable web inbound turns with explicit session targeting
+  Current slice: authenticated web media upload/download, console upload flow, attachment-capable web inbound turns, gateway-side attachment hydration from stored media, and outbound media request builders for Telegram, Discord, and WhatsApp. Slack/Signal media send depth is still pending.
 - [x] Broader edit support beyond Telegram
 - [x] Delete support where platforms allow it
 - [x] Shared outbound text normalization and reply-safe formatting
@@ -97,8 +97,7 @@ The main remaining gap is feature surface, not the core message-to-model flow.
 - [x] More integration coverage across supported channels
 - [x] Gateway-path coverage for authenticated web media upload/inbound flows
 - [x] Better end-to-end coverage for operator flows
-- [ ] External-API contract fixtures for supported channels
-  Current slice: Slack, Discord, and WhatsApp inbound contract fixtures
+- [x] External-API contract fixtures for supported channels
 - [x] More failure-path tests for provider failover and retries
 - [x] Coverage for Canvas RPC/UI behavior
 - [x] Unit and gateway coverage for Canvas export snapshots

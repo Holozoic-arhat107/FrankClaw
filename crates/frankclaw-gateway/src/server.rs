@@ -1079,7 +1079,7 @@ async fn process_inbound_message_with_target(
             attachments: Vec::new(),
             reply_to: inbound.platform_message_id.clone(),
         };
-        let delivery = deliver_outbound_message(channel, outbound).await?;
+        let delivery = deliver_outbound_message(channel, outbound, Some(state.media.as_ref())).await?;
         persist_delivery_metadata(
             state.sessions.as_ref(),
             &session_key,

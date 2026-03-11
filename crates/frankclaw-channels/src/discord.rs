@@ -13,6 +13,7 @@ use frankclaw_core::channel::*;
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
+use crate::outbound_media::{attachment_bytes, attachment_filename};
 use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
@@ -260,17 +261,19 @@ impl ChannelPlugin for DiscordChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
         let channel_id = msg.thread_id.as_deref().unwrap_or(&msg.to);
-        let resp = self
+        let request = self
             .client
             .post(format!("{DISCORD_API_BASE}/channels/{channel_id}/messages"))
-            .header("authorization", self.auth_header())
-            .json(&build_send_body(&msg))
-            .send()
-            .await
-            .map_err(|e| FrankClawError::Channel {
-                channel: self.id(),
-                msg: format!("send failed: {e}"),
-            })?;
+            .header("authorization", self.auth_header());
+        let resp = if msg.attachments.is_empty() {
+            request.json(&build_send_body(&msg)).send().await
+        } else {
+            request.multipart(build_send_form(&msg)?).send().await
+        }
+        .map_err(|e| FrankClawError::Channel {
+            channel: self.id(),
+            msg: format!("send failed: {e}"),
+        })?;
 
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
@@ -539,6 +542,56 @@ fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
     body
 }
 
+fn build_send_form(msg: &OutboundMessage) -> Result<reqwest::multipart::Form> {
+    let (payload, specs) = build_send_attachment_payload(msg)?;
+    let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
+    for spec in specs {
+        let part = reqwest::multipart::Part::bytes(spec.bytes)
+            .file_name(spec.filename)
+            .mime_str(&spec.mime_type)
+            .map_err(|e| FrankClawError::Channel {
+                channel: ChannelId::new("discord"),
+                msg: format!("invalid attachment mime type: {e}"),
+            })?;
+        form = form.part(spec.field_name, part);
+    }
+    Ok(form)
+}
+
+#[derive(Debug)]
+struct DiscordAttachmentSpec {
+    field_name: String,
+    filename: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+}
+
+fn build_send_attachment_payload(
+    msg: &OutboundMessage,
+) -> Result<(serde_json::Value, Vec<DiscordAttachmentSpec>)> {
+    let channel = ChannelId::new("discord");
+    let mut payload = build_send_body(msg);
+    let mut metadata = Vec::with_capacity(msg.attachments.len());
+    let mut specs = Vec::with_capacity(msg.attachments.len());
+
+    for (index, attachment) in msg.attachments.iter().enumerate() {
+        let filename = attachment_filename(attachment);
+        metadata.push(serde_json::json!({
+            "id": index,
+            "filename": filename,
+        }));
+        specs.push(DiscordAttachmentSpec {
+            field_name: format!("files[{index}]"),
+            filename,
+            mime_type: attachment.mime_type.clone(),
+            bytes: attachment_bytes(&channel, attachment)?,
+        });
+    }
+
+    payload["attachments"] = serde_json::Value::Array(metadata);
+    Ok((payload, specs))
+}
+
 fn build_edit_request(target: &EditMessageTarget, new_text: &str) -> (String, serde_json::Value) {
     let text = normalize_outbound_text(new_text, OutboundTextFlavor::Plain);
     (
@@ -654,6 +707,55 @@ mod tests {
             serde_json::json!("msg-99")
         );
         assert_eq!(body["allowed_mentions"]["parse"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn build_send_attachment_payload_includes_attachment_manifest() {
+        let (payload, specs) = build_send_attachment_payload(&OutboundMessage {
+            channel: ChannelId::new("discord"),
+            account_id: "default".into(),
+            to: "chan-1".into(),
+            thread_id: None,
+            text: "see attached".into(),
+            attachments: vec![OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "image/png".into(),
+                filename: Some("photo.png".into()),
+                url: None,
+                bytes: b"png".to_vec(),
+            }],
+            reply_to: None,
+        })
+        .expect("attachment payload should build");
+
+        assert_eq!(
+            payload["attachments"],
+            serde_json::json!([{ "id": 0, "filename": "photo.png" }])
+        );
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].field_name, "files[0]");
+    }
+
+    #[test]
+    fn build_send_attachment_payload_requires_inline_bytes() {
+        let err = build_send_attachment_payload(&OutboundMessage {
+            channel: ChannelId::new("discord"),
+            account_id: "default".into(),
+            to: "chan-1".into(),
+            thread_id: None,
+            text: "see attached".into(),
+            attachments: vec![OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "image/png".into(),
+                filename: Some("photo.png".into()),
+                url: None,
+                bytes: Vec::new(),
+            }],
+            reply_to: None,
+        })
+        .expect_err("missing bytes should fail");
+
+        assert!(err.to_string().contains("missing inline bytes"));
     }
 
     #[test]

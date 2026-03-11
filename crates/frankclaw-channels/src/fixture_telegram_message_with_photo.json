@@ -1,0 +1,24 @@
+{
+  "message_id": 99,
+  "message_thread_id": 7,
+  "date": 1700000000,
+  "caption": "look",
+  "chat": {
+    "id": -100123,
+    "type": "supergroup"
+  },
+  "from": {
+    "id": 42,
+    "first_name": "User"
+  },
+  "photo": [
+    {
+      "file_id": "small",
+      "file_size": 512
+    },
+    {
+      "file_id": "large",
+      "file_size": 1024
+    }
+  ]
+}

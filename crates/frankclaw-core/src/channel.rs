@@ -84,6 +84,16 @@ pub struct OutboundAttachment {
     pub media_id: MediaId,
     pub mime_type: String,
     pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip, default)]
+    pub bytes: Vec<u8>,
+}
+
+impl OutboundAttachment {
+    pub fn has_inline_bytes(&self) -> bool {
+        !self.bytes.is_empty()
+    }
 }
 
 /// Result of sending a message.

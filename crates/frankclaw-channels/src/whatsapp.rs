@@ -10,6 +10,10 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::types::ChannelId;
 
 use crate::media_text::{normalize_mime_type, text_or_attachment_placeholder};
+use crate::outbound_media::{
+    AttachmentKind, attachment_bytes, attachment_filename, attachment_kind,
+    require_single_attachment,
+};
 use crate::outbound_text::{normalize_outbound_text, OutboundTextFlavor};
 
 const WHATSAPP_GRAPH_BASE: &str = "https://graph.facebook.com/v19.0";
@@ -73,8 +77,65 @@ impl WhatsAppChannel {
         format!("{WHATSAPP_GRAPH_BASE}/{}/messages", self.phone_number_id)
     }
 
+    fn media_endpoint(&self) -> String {
+        format!("{WHATSAPP_GRAPH_BASE}/{}/media", self.phone_number_id)
+    }
+
     fn health_endpoint(&self) -> String {
         format!("{WHATSAPP_GRAPH_BASE}/{}", self.phone_number_id)
+    }
+
+    async fn upload_media(
+        &self,
+        attachment: &OutboundAttachment,
+    ) -> Result<String> {
+        let channel = self.id();
+        let bytes = attachment_bytes(&channel, attachment)?;
+        let filename = attachment_filename(attachment);
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(&attachment.mime_type)
+            .map_err(|e| FrankClawError::Channel {
+                channel: channel.clone(),
+                msg: format!("invalid attachment mime type: {e}"),
+            })?;
+        let form = reqwest::multipart::Form::new()
+            .text("messaging_product", "whatsapp")
+            .part("file", part);
+        let resp = self
+            .client
+            .post(self.media_endpoint())
+            .header("authorization", self.auth_header())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| FrankClawError::Channel {
+                channel: channel.clone(),
+                msg: format!("whatsapp media upload failed: {e}"),
+            })?;
+
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.map_err(|e| FrankClawError::Channel {
+            channel: channel.clone(),
+            msg: format!("invalid whatsapp media upload response: {e}"),
+        })?;
+        if !status.is_success() {
+            return Err(FrankClawError::Channel {
+                channel,
+                msg: body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unknown whatsapp media upload failure")
+                    .to_string(),
+            });
+        }
+
+        body["id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| FrankClawError::Channel {
+                channel: self.id(),
+                msg: "whatsapp media upload response missing id".into(),
+            })
     }
 }
 
@@ -134,11 +195,18 @@ impl ChannelPlugin for WhatsAppChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<SendResult> {
+        let body = if msg.attachments.is_empty() {
+            build_send_body(&msg)
+        } else {
+            let attachment = require_single_attachment(&self.id(), &msg.attachments)?;
+            let uploaded_media_id = self.upload_media(attachment).await?;
+            build_media_send_body(&msg, attachment, &uploaded_media_id)
+        };
         let resp = self
             .client
             .post(self.messages_endpoint())
             .header("authorization", self.auth_header())
-            .json(&build_send_body(&msg))
+            .json(&body)
             .send()
             .await
             .map_err(|e| FrankClawError::Channel {
@@ -314,6 +382,62 @@ pub fn build_send_body(msg: &OutboundMessage) -> serde_json::Value {
             "preview_url": false
         }
     });
+
+    if let Some(reply_to) = msg.reply_to.as_deref() {
+        body["context"] = serde_json::json!({ "message_id": reply_to });
+    }
+
+    body
+}
+
+fn build_media_send_body(
+    msg: &OutboundMessage,
+    attachment: &OutboundAttachment,
+    uploaded_media_id: &str,
+) -> serde_json::Value {
+    let text = normalize_outbound_text(&msg.text, OutboundTextFlavor::WhatsApp);
+    let mut body = serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": msg.to,
+    });
+
+    match attachment_kind(&attachment.mime_type) {
+        AttachmentKind::Image => {
+            body["type"] = serde_json::json!("image");
+            body["image"] = serde_json::json!({
+                "id": uploaded_media_id,
+            });
+            if !text.is_empty() {
+                body["image"]["caption"] = serde_json::json!(text);
+            }
+        }
+        AttachmentKind::Video => {
+            body["type"] = serde_json::json!("video");
+            body["video"] = serde_json::json!({
+                "id": uploaded_media_id,
+            });
+            if !text.is_empty() {
+                body["video"]["caption"] = serde_json::json!(text);
+            }
+        }
+        AttachmentKind::Audio => {
+            body["type"] = serde_json::json!("audio");
+            body["audio"] = serde_json::json!({
+                "id": uploaded_media_id,
+            });
+        }
+        AttachmentKind::Document => {
+            body["type"] = serde_json::json!("document");
+            body["document"] = serde_json::json!({
+                "id": uploaded_media_id,
+                "filename": attachment_filename(attachment),
+            });
+            if !text.is_empty() {
+                body["document"]["caption"] = serde_json::json!(text);
+            }
+        }
+    }
 
     if let Some(reply_to) = msg.reply_to.as_deref() {
         body["context"] = serde_json::json!({ "message_id": reply_to });
@@ -555,6 +679,62 @@ mod tests {
         });
 
         assert_eq!(body["text"]["body"], serde_json::json!("Visible answer"));
+    }
+
+    #[test]
+    fn build_media_send_body_uses_document_payload() {
+        let body = build_media_send_body(
+            &OutboundMessage {
+                channel: ChannelId::new("whatsapp"),
+                account_id: "12345".into(),
+                to: "15551234567".into(),
+                thread_id: None,
+                text: "See attached".into(),
+                attachments: Vec::new(),
+                reply_to: Some("wamid.1".into()),
+            },
+            &OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "application/pdf".into(),
+                filename: Some("report.pdf".into()),
+                url: None,
+                bytes: b"%PDF".to_vec(),
+            },
+            "media-1",
+        );
+
+        assert_eq!(body["type"], serde_json::json!("document"));
+        assert_eq!(body["document"]["id"], serde_json::json!("media-1"));
+        assert_eq!(body["document"]["filename"], serde_json::json!("report.pdf"));
+        assert_eq!(body["document"]["caption"], serde_json::json!("See attached"));
+        assert_eq!(body["context"]["message_id"], serde_json::json!("wamid.1"));
+    }
+
+    #[test]
+    fn build_media_send_body_omits_caption_for_audio() {
+        let body = build_media_send_body(
+            &OutboundMessage {
+                channel: ChannelId::new("whatsapp"),
+                account_id: "12345".into(),
+                to: "15551234567".into(),
+                thread_id: None,
+                text: "ignored".into(),
+                attachments: Vec::new(),
+                reply_to: None,
+            },
+            &OutboundAttachment {
+                media_id: frankclaw_core::types::MediaId::new(),
+                mime_type: "audio/ogg".into(),
+                filename: Some("voice.ogg".into()),
+                url: None,
+                bytes: b"OggS".to_vec(),
+            },
+            "media-2",
+        );
+
+        assert_eq!(body["type"], serde_json::json!("audio"));
+        assert_eq!(body["audio"]["id"], serde_json::json!("media-2"));
+        assert!(body["audio"]["caption"].is_null());
     }
 
     #[test]
