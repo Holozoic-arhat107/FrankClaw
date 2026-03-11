@@ -2,6 +2,14 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
+use frankclaw_core::error::{FrankClawError, Result};
+
+/// Maximum total document size (title + body + all block text) in bytes.
+const MAX_DOCUMENT_SIZE: usize = 1_024 * 1_024;
+
+/// Maximum number of blocks per document.
+const MAX_BLOCKS_PER_DOCUMENT: usize = 200;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasBlockKind {
@@ -40,6 +48,8 @@ pub struct CanvasPatch {
     pub body: Option<String>,
     pub session_key: Option<Option<String>>,
     pub append_blocks: Vec<CanvasBlock>,
+    /// If set, the patch is rejected unless the current revision matches.
+    pub expected_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +112,8 @@ impl CanvasStore {
         self.documents.read().await.get(canvas_id).cloned()
     }
 
-    pub async fn set(&self, mut document: CanvasDocument) -> CanvasDocument {
+    pub async fn set(&self, mut document: CanvasDocument) -> Result<CanvasDocument> {
+        validate_document_size(&document)?;
         let mut documents = self.documents.write().await;
         let next_revision = documents
             .get(&document.id)
@@ -110,10 +121,10 @@ impl CanvasStore {
             .unwrap_or(1);
         document.revision = next_revision;
         documents.insert(document.id.clone(), document.clone());
-        document
+        Ok(document)
     }
 
-    pub async fn patch(&self, canvas_id: &str, patch: CanvasPatch) -> CanvasDocument {
+    pub async fn patch(&self, canvas_id: &str, patch: CanvasPatch) -> Result<CanvasDocument> {
         let mut documents = self.documents.write().await;
         let existing = documents
             .get(canvas_id)
@@ -127,6 +138,17 @@ impl CanvasStore {
                 revision: 0,
                 updated_at: chrono::Utc::now(),
             });
+        // Conflict detection: reject stale patches.
+        if let Some(expected) = patch.expected_revision {
+            if existing.revision != expected {
+                return Err(FrankClawError::InvalidRequest {
+                    msg: format!(
+                        "canvas revision conflict: expected {expected}, current is {}",
+                        existing.revision
+                    ),
+                });
+            }
+        }
         let mut document = existing;
         if let Some(title) = patch.title {
             document.title = title;
@@ -138,10 +160,20 @@ impl CanvasStore {
             document.session_key = session_key;
         }
         document.blocks.extend(patch.append_blocks);
+        // Enforce block count limit.
+        if document.blocks.len() > MAX_BLOCKS_PER_DOCUMENT {
+            return Err(FrankClawError::InvalidRequest {
+                msg: format!(
+                    "canvas block count exceeds limit ({} > {MAX_BLOCKS_PER_DOCUMENT})",
+                    document.blocks.len()
+                ),
+            });
+        }
+        validate_document_size(&document)?;
         document.revision += 1;
         document.updated_at = chrono::Utc::now();
         documents.insert(document.id.clone(), document.clone());
-        document
+        Ok(document)
     }
 
     pub async fn clear(&self, canvas_id: &str) {
@@ -191,8 +223,38 @@ fn render_markdown(document: &CanvasDocument) -> String {
     sections.join("\n\n")
 }
 
+fn validate_document_size(document: &CanvasDocument) -> Result<()> {
+    let total = document.title.len()
+        + document.body.len()
+        + document.blocks.iter().map(|b| b.text.len()).sum::<usize>();
+    if total > MAX_DOCUMENT_SIZE {
+        return Err(FrankClawError::InvalidRequest {
+            msg: format!(
+                "canvas document size exceeds limit ({total} bytes > {MAX_DOCUMENT_SIZE})"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Strip HTML tags from text to prevent injection in markdown export.
+fn strip_html_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+}
+
 fn render_markdown_block(block: &CanvasBlock) -> String {
-    let text = block.text.trim();
+    let text = strip_html_tags(block.text.trim());
+    let text = text.as_str();
     match block.kind {
         CanvasBlockKind::Markdown => text.to_string(),
         CanvasBlockKind::Code => format!("```text\n{}\n```", text),
@@ -328,5 +390,126 @@ mod tests {
         assert!(export.contains("**Status (ok)**"));
         assert!(export.contains("**Metric:** Open sessions = 12"));
         assert!(export.contains("**Action (open_url)**"));
+    }
+
+    #[tokio::test]
+    async fn document_size_limit_rejects_oversized_content() {
+        let store = CanvasStore::new();
+        let big_body = "x".repeat(MAX_DOCUMENT_SIZE + 1);
+        let err = store
+            .set(CanvasDocument {
+                id: "big".into(),
+                title: String::new(),
+                body: big_body,
+                session_key: None,
+                blocks: Vec::new(),
+                revision: 0,
+                updated_at: chrono::Utc::now(),
+            })
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("size exceeds limit"));
+    }
+
+    #[tokio::test]
+    async fn block_count_limit_rejects_excess_blocks() {
+        let store = CanvasStore::new();
+        let blocks: Vec<CanvasBlock> = (0..MAX_BLOCKS_PER_DOCUMENT + 1)
+            .map(|i| CanvasBlock {
+                kind: CanvasBlockKind::Markdown,
+                text: format!("block-{i}"),
+                meta: None,
+            })
+            .collect();
+        let err = store
+            .patch(
+                "many-blocks",
+                CanvasPatch {
+                    append_blocks: blocks,
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("block count exceeds"));
+    }
+
+    #[tokio::test]
+    async fn patch_conflict_detection_rejects_stale_revision() {
+        let store = CanvasStore::new();
+        // Create document at revision 1.
+        store
+            .set(CanvasDocument {
+                id: "conflict".into(),
+                title: "v1".into(),
+                body: String::new(),
+                session_key: None,
+                blocks: Vec::new(),
+                revision: 0,
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("set should succeed");
+
+        // Patch expecting revision 1 should succeed (advances to 2).
+        store
+            .patch(
+                "conflict",
+                CanvasPatch {
+                    title: Some("v2".into()),
+                    expected_revision: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("patch at correct revision should succeed");
+
+        // Patch expecting revision 1 again should fail (current is 2).
+        let err = store
+            .patch(
+                "conflict",
+                CanvasPatch {
+                    title: Some("v3-stale".into()),
+                    expected_revision: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("revision conflict"));
+    }
+
+    #[test]
+    fn strip_html_tags_removes_script_tags() {
+        assert_eq!(
+            strip_html_tags("hello <script>alert('xss')</script> world"),
+            "hello alert('xss') world"
+        );
+        assert_eq!(
+            strip_html_tags("<b>bold</b> and <i>italic</i>"),
+            "bold and italic"
+        );
+        assert_eq!(strip_html_tags("no tags here"), "no tags here");
+        assert_eq!(strip_html_tags(""), "");
+    }
+
+    #[test]
+    fn export_markdown_sanitizes_html_in_blocks() {
+        let document = CanvasDocument {
+            id: "xss".into(),
+            title: "Test".into(),
+            body: String::new(),
+            session_key: None,
+            blocks: vec![CanvasBlock {
+                kind: CanvasBlockKind::Markdown,
+                text: "safe <script>alert('xss')</script> text".into(),
+                meta: None,
+            }],
+            revision: 1,
+            updated_at: chrono::DateTime::from_timestamp(1_710_000_000, 0).unwrap(),
+        };
+        let export = export_document(&document, CanvasExportFormat::Markdown);
+        assert!(!export.contains("<script>"));
+        assert!(export.contains("safe alert('xss') text"));
     }
 }

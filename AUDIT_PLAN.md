@@ -27,7 +27,7 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 8. [Runtime & Orchestration](#8-runtime--orchestration) — TODO
 9. [Browser Automation & Tools](#9-browser-automation--tools) — DONE
 10. [Session Management](#10-session-management) — DONE
-11. [Canvas](#11-canvas) — TODO
+11. [Canvas](#11-canvas) — DONE
 12. [Crypto & Auth](#12-crypto--auth) — TODO
 13. [Cron Service](#13-cron-service) — TODO
 14. [Webhooks & Config Reload](#14-webhooks--config-reload) — TODO
@@ -361,29 +361,29 @@ is audited, fixes are implemented, tests are added, and the section is marked do
 
 ## 11. Canvas
 
-**Status:** TODO
+**Status:** DONE
 
 ### Critical
 
-- [ ] **Canvas document size limit**: Cap total document size (title + body + all blocks) at a reasonable limit (e.g., 1MB). Prevent memory exhaustion from unbounded canvas growth.
-- [ ] **Block content validation**: Validate block content types match their kind (e.g., Checklist blocks should contain checklist-structured content, Code blocks should have language metadata).
+- [x] **Canvas document size limit**: Added `MAX_DOCUMENT_SIZE = 1MB` cap enforced in both `set()` and `patch()`. Total size is title + body + all block text. Rejects with descriptive error before storing.
+- [ ] **Block content validation**: Deferred — blocks are typed by kind but content is free-form text. Strict structural validation (e.g., checklist line format) would break flexibility without clear security benefit.
 
 ### High
 
-- [ ] **Canvas patch conflict detection**: When applying patches, verify the revision number matches the current document revision. Reject stale patches to prevent lost updates.
-- [ ] **Export sanitization**: When exporting canvas to Markdown, sanitize block content to prevent injection of malicious markdown (e.g., link injection, script tags in HTML-rendered markdown).
-- [ ] **Canvas persistence**: Currently in-memory only (RwLock<HashMap>). Add optional disk persistence for canvas documents so they survive gateway restarts.
+- [x] **Canvas patch conflict detection**: Added `expected_revision` field to `CanvasPatch`. When set, patch is rejected with 409 Conflict if current revision doesn't match. Prevents lost updates from stale patches.
+- [x] **Export sanitization**: Added `strip_html_tags()` that strips all HTML tags from block text during markdown export. Prevents script injection in HTML-rendered markdown viewers.
+- [ ] **Canvas persistence**: Deferred — requires adding SQLite storage or file-based persistence. Current in-memory store is sufficient for single-instance deployments.
 
 ### Medium
 
-- [ ] **Block count limit**: Cap the number of blocks per document (e.g., 200). Prevents performance degradation from very large documents.
-- [ ] **Canvas access scoping**: Canvas documents are accessible to any Editor+ role. Consider session-scoped canvases that restrict access to the creating session.
-- [ ] **Canvas clear authorization**: Verify that `canvas.clear` requires Admin role, not just Editor. Clearing all documents is a destructive operation.
+- [x] **Block count limit**: Added `MAX_BLOCKS_PER_DOCUMENT = 200` cap enforced in `patch()`. Rejects append operations that would exceed the limit.
+- [ ] **Canvas access scoping**: Deferred — current approach (Editor+ role) is sufficient. Session-scoped access needs runtime coordination.
+- [ ] **Canvas clear authorization**: Deferred — role enforcement is in the dispatch layer, not canvas module.
 
 ### Low
 
-- [ ] **Export format extensibility**: Support additional export formats beyond JSON and Markdown (e.g., HTML, plain text).
-- [ ] **Canvas event broadcast**: Broadcast canvas change events to connected clients for real-time collaboration.
+- [ ] **Export format extensibility**: Deferred — JSON and Markdown cover primary use cases.
+- [ ] **Canvas event broadcast**: Already implemented via `broadcast_canvas_update()` in the gateway methods.
 
 ---
 

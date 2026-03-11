@@ -425,7 +425,7 @@ pub async fn canvas_set(
         );
     }
 
-    let document = state.canvas.set(crate::canvas::CanvasDocument {
+    let document = match state.canvas.set(crate::canvas::CanvasDocument {
         id: canvas_id,
         title,
         body,
@@ -433,7 +433,10 @@ pub async fn canvas_set(
         blocks,
         revision: 0,
         updated_at: chrono::Utc::now(),
-    }).await;
+    }).await {
+        Ok(doc) => doc,
+        Err(e) => return ResponseFrame::err(request.id, 400, &e.to_string()),
+    };
     broadcast_canvas_update(state, &document.id, Some(&document));
 
     ResponseFrame::ok(request.id, serde_json::json!({ "canvas": document }))
@@ -471,7 +474,11 @@ pub async fn canvas_patch(
         return ResponseFrame::err(request.id, 400, "canvas.patch requires at least one change");
     }
 
-    let document = state
+    let expected_revision = request
+        .params
+        .get("expected_revision")
+        .and_then(|value| value.as_u64());
+    let document = match state
         .canvas
         .patch(
             &canvas_id_from_params(&request.params),
@@ -480,9 +487,13 @@ pub async fn canvas_patch(
                 body,
                 session_key,
                 append_blocks,
+                expected_revision,
             },
         )
-        .await;
+        .await {
+        Ok(doc) => doc,
+        Err(e) => return ResponseFrame::err(request.id, 409, &e.to_string()),
+    };
     broadcast_canvas_update(state, &document.id, Some(&document));
     ResponseFrame::ok(request.id, serde_json::json!({ "canvas": document }))
 }
