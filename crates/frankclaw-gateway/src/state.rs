@@ -54,6 +54,9 @@ pub struct GatewayState {
 
     /// Signals graceful shutdown to all tasks.
     pub shutdown: CancellationToken,
+
+    /// Active chat runs keyed by session key, used for chat.cancel.
+    pub active_runs: DashMap<String, CancellationToken>,
 }
 
 /// Per-connection state.
@@ -91,6 +94,7 @@ impl GatewayState {
             broadcast,
             canvas,
             shutdown: CancellationToken::new(),
+            active_runs: DashMap::new(),
         })
     }
 

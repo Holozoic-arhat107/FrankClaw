@@ -100,6 +100,7 @@ pub async fn execute_request(
             channel_id: None,
             channel_capabilities: None,
             canvas: None,
+            cancel_token: None,
         })
         .await
 }

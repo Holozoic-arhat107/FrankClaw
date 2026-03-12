@@ -143,6 +143,7 @@ pub enum EventType {
     ChatDelta,
     ChatComplete,
     ChatError,
+    ChatAborted,
     PresenceUpdate,
     ChannelHealth,
     ConfigChanged,

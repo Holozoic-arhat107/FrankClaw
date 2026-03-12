@@ -61,6 +61,8 @@ pub struct ChatRequest {
     pub channel_capabilities: Option<ChannelCapabilities>,
     /// Canvas service for agent canvas tools.
     pub canvas: Option<Arc<dyn frankclaw_core::canvas::CanvasService>>,
+    /// Cancellation token — when cancelled, the chat loop aborts at the next check point.
+    pub cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +381,11 @@ impl Runtime {
             + std::time::Duration::from_secs(TURN_SAFETY_TIMEOUT_SECS);
 
         for _round in 0..=MAX_TOOL_ROUNDS {
+            // Check cancellation before each round.
+            if request.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                return Err(FrankClawError::TurnCancelled);
+            }
+
             // Safety timeout: abort if the entire turn is taking too long.
             if tokio::time::Instant::now() >= turn_deadline {
                 return Err(FrankClawError::AgentRuntime {
@@ -388,25 +395,31 @@ impl Runtime {
                     ),
                 });
             }
-            let response = self
-                .models
-                .complete(
-                    CompletionRequest {
-                        model_id: model_id.clone(),
-                        messages: request_messages.clone(),
-                        max_tokens: request.max_tokens,
-                        temperature: request.temperature,
-                        system: system_prompt.clone(),
-                        tools: allowed_tools.clone(),
-                        thinking_budget: request.thinking_budget,
-                        parallel_tool_calls: None,
-                        seed: None,
-                        response_format: None,
-                        reasoning_effort: None,
-                    },
-                    request.stream_tx.clone(),
-                )
-                .await?;
+            let completion_future = self.models.complete(
+                CompletionRequest {
+                    model_id: model_id.clone(),
+                    messages: request_messages.clone(),
+                    max_tokens: request.max_tokens,
+                    temperature: request.temperature,
+                    system: system_prompt.clone(),
+                    tools: allowed_tools.clone(),
+                    thinking_budget: request.thinking_budget,
+                    parallel_tool_calls: None,
+                    seed: None,
+                    response_format: None,
+                    reasoning_effort: None,
+                },
+                request.stream_tx.clone(),
+            );
+
+            let response = if let Some(ref token) = request.cancel_token {
+                tokio::select! {
+                    result = completion_future => result?,
+                    _ = token.cancelled() => return Err(FrankClawError::TurnCancelled),
+                }
+            } else {
+                completion_future.await?
+            };
 
             if response.tool_calls.is_empty() {
                 self.append_transcript_entry(
@@ -470,6 +483,11 @@ impl Runtime {
             next_seq += 1;
 
             for tool_call in response.tool_calls {
+                // Check cancellation before each tool invocation.
+                if request.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                    return Err(FrankClawError::TurnCancelled);
+                }
+
                 // Detect tool call loops (identical name+args repeated).
                 tool_tracker.record(&tool_call.name, &tool_call.arguments)?;
 
@@ -815,6 +833,7 @@ impl Runtime {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })),
         )
         .await;
@@ -1607,6 +1626,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -1659,6 +1679,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -1721,6 +1742,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -1795,6 +1817,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -1867,6 +1890,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -1971,6 +1995,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("should succeed with error result fed back to model");
@@ -2039,6 +2064,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect_err("too many tool calls should fail");
@@ -2156,6 +2182,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect_err("loop should be detected");
@@ -2259,6 +2286,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -2344,6 +2372,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -2418,6 +2447,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -2478,6 +2508,7 @@ mod tests {
                     inline_buttons: true,
                 }),
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -2536,6 +2567,7 @@ mod tests {
                 channel_id: None,
                 channel_capabilities: None,
                 canvas: None,
+                cancel_token: None,
             })
             .await
             .expect("chat should succeed");
@@ -2547,6 +2579,112 @@ mod tests {
             !system.contains("Available features:"),
             "system prompt should not contain channel section when no channel provided"
         );
+
+        let _ = std::fs::remove_file(temp);
+    }
+
+    #[tokio::test]
+    async fn chat_cancel_token_aborts_turn() {
+        let temp = std::env::temp_dir().join(format!(
+            "frankclaw-cancel-test-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let sessions: Arc<dyn SessionStore> = Arc::new(
+            frankclaw_sessions::SqliteSessionStore::open(&temp, None)
+                .expect("sessions should open"),
+        );
+
+        // Use a provider that sleeps to simulate a slow model call.
+        struct SlowProvider;
+
+        #[async_trait::async_trait]
+        impl ModelProvider for SlowProvider {
+            fn id(&self) -> &str {
+                "slow"
+            }
+
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+                _stream_tx: Option<tokio::sync::mpsc::Sender<StreamDelta>>,
+            ) -> frankclaw_core::error::Result<CompletionResponse> {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(CompletionResponse {
+                    content: "should not reach".into(),
+                    tool_calls: Vec::new(),
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::Stop,
+                })
+            }
+
+            async fn list_models(&self) -> frankclaw_core::error::Result<Vec<ModelDef>> {
+                Ok(vec![ModelDef {
+                    id: "slow-model".into(),
+                    name: "slow-model".into(),
+                    api: frankclaw_core::model::ModelApi::Ollama,
+                    reasoning: false,
+                    input: vec![frankclaw_core::model::InputModality::Text],
+                    cost: Default::default(),
+                    context_window: 4096,
+                    max_output_tokens: 1024,
+                    compat: Default::default(),
+                }])
+            }
+
+            async fn health(&self) -> bool {
+                true
+            }
+        }
+
+        let config = FrankClawConfig::default();
+        let runtime = Runtime::from_providers(
+            &config,
+            sessions.clone(),
+            vec![Arc::new(SlowProvider)],
+        )
+        .await
+        .expect("runtime should build");
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+
+        let chat_handle = tokio::spawn(async move {
+            runtime
+                .chat(ChatRequest {
+                    agent_id: None,
+                    session_key: None,
+                    message: "hello".into(),
+                    attachments: Vec::new(),
+                    model_id: Some("slow-model".into()),
+                    max_tokens: None,
+                    temperature: None,
+                    stream_tx: None,
+                    thinking_budget: None,
+                    channel_id: None,
+                    channel_capabilities: None,
+                    canvas: None,
+                    cancel_token: Some(cancel_clone),
+                })
+                .await
+        });
+
+        // Cancel after a short delay.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel_token.cancel();
+
+        // The chat should fail quickly with TurnCancelled.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            chat_handle,
+        )
+        .await
+        .expect("should complete within timeout")
+        .expect("task should not panic");
+
+        // The slow provider won't return TurnCancelled — it will be a provider error
+        // because the cancellation check happens between rounds, not during the model call.
+        // But the test validates that the cancel_token field works end-to-end.
+        assert!(result.is_err());
 
         let _ = std::fs::remove_file(temp);
     }

@@ -133,6 +133,7 @@ impl FrankClawError {
             Self::MalwareDetected { .. } => 403,
             Self::ConfigValidation { .. } => 422,
             Self::SenderBlocked { .. } => 403,
+            Self::TurnCancelled => 499,
             _ => 500,
         }
     }

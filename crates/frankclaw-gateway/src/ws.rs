@@ -161,6 +161,9 @@ async fn dispatch_method(
         Method::ChatSend => {
             crate::methods::chat_send(state, _conn_id, request).await
         }
+        Method::ChatCancel => {
+            crate::methods::chat_cancel(state, request).await
+        }
         Method::SessionsList => {
             crate::methods::sessions_list(state, request).await
         }

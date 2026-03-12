@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use frankclaw_core::protocol::{EventFrame, EventType, Frame, RequestFrame, ResponseFrame};
 use frankclaw_core::session::SessionStore;
 use frankclaw_core::types::{AgentId, ConnId, SessionKey};
@@ -184,6 +186,15 @@ pub async fn chat_send(
         .unwrap_or(true);
     let request_id = request.id.clone();
 
+    // Create a cancellation token for this run and register it.
+    let cancel_token = CancellationToken::new();
+    // Use request_id as the run key (unique per chat request).
+    let run_key = match &request_id {
+        frankclaw_core::types::RequestId::Text(s) => s.clone(),
+        frankclaw_core::types::RequestId::Number(n) => n.to_string(),
+    };
+    state.active_runs.insert(run_key.clone(), cancel_token.clone());
+
     let stream_tx = if stream {
         state.clients.get(&conn_id).map(|client| {
             let client_tx = client.tx.clone();
@@ -257,10 +268,14 @@ pub async fn chat_send(
             channel_id: None,
             channel_capabilities: None,
             canvas: None,
+            cancel_token: Some(cancel_token),
         })
         .await
     {
         Ok(response) => {
+            // Remove from active runs.
+            state.active_runs.remove(&run_key);
+
             let event = Frame::Event(EventFrame {
                 event: EventType::ChatComplete,
                 payload: serde_json::json!({
@@ -285,8 +300,17 @@ pub async fn chat_send(
             )
         }
         Err(err) => {
+            // Remove from active runs.
+            state.active_runs.remove(&run_key);
+
+            let is_cancelled = matches!(err, frankclaw_core::error::FrankClawError::TurnCancelled);
+            let event_type = if is_cancelled {
+                EventType::ChatAborted
+            } else {
+                EventType::ChatError
+            };
             let event = Frame::Event(EventFrame {
-                event: EventType::ChatError,
+                event: event_type,
                 payload: serde_json::json!({
                     "request_id": request_id,
                     "message": err.to_string(),
@@ -295,8 +319,33 @@ pub async fn chat_send(
             if let Ok(json) = serde_json::to_string(&event) {
                 let _ = state.broadcast.send(json);
             }
-            ResponseFrame::err(request.id, err.status_code(), err.to_string())
+            let code = if is_cancelled { 499 } else { err.status_code() };
+            ResponseFrame::err(request.id, code, err.to_string())
         }
+    }
+}
+
+/// Handle `chat.cancel` method.
+pub async fn chat_cancel(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let request_id = match request.params.get("request_id").and_then(|v| v.as_str()) {
+        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "request_id is required"),
+    };
+
+    if let Some((_, token)) = state.active_runs.remove(&request_id) {
+        token.cancel();
+        ResponseFrame::ok(
+            request.id,
+            serde_json::json!({
+                "request_id": request_id,
+                "status": "cancelled",
+            }),
+        )
+    } else {
+        ResponseFrame::err(request.id, 404, "no active chat run with that request_id")
     }
 }
 
@@ -1161,6 +1210,93 @@ mod tests {
         .await;
         assert!(clear_response.error.is_none());
         assert!(state.canvas.get("ops").await.is_none());
+
+        let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
+        let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn chat_cancel_stops_active_run() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-methods-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (state, _sessions) = build_test_state(&temp_dir).await;
+
+        // Insert a fake active run token.
+        let token = tokio_util::sync::CancellationToken::new();
+        state.active_runs.insert("req-42".into(), token.clone());
+        assert!(!token.is_cancelled());
+
+        // Cancel it.
+        let response = chat_cancel(
+            &state,
+            RequestFrame {
+                id: RequestId::Text("cancel-1".into()),
+                method: Method::ChatCancel,
+                params: serde_json::json!({ "request_id": "req-42" }),
+            },
+        )
+        .await;
+
+        assert!(response.error.is_none());
+        assert_eq!(
+            response.result.as_ref().and_then(|v| v["status"].as_str()),
+            Some("cancelled")
+        );
+        assert!(token.is_cancelled());
+        assert!(state.active_runs.is_empty());
+
+        let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
+        let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn chat_cancel_returns_404_for_unknown_run() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-methods-cancel-404-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (state, _sessions) = build_test_state(&temp_dir).await;
+
+        let response = chat_cancel(
+            &state,
+            RequestFrame {
+                id: RequestId::Text("cancel-2".into()),
+                method: Method::ChatCancel,
+                params: serde_json::json!({ "request_id": "nonexistent" }),
+            },
+        )
+        .await;
+
+        assert_eq!(response.error.as_ref().map(|e| e.code), Some(404));
+
+        let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
+        let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn chat_cancel_requires_request_id() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-methods-cancel-400-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (state, _sessions) = build_test_state(&temp_dir).await;
+
+        let response = chat_cancel(
+            &state,
+            RequestFrame {
+                id: RequestId::Text("cancel-3".into()),
+                method: Method::ChatCancel,
+                params: serde_json::json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(response.error.as_ref().map(|e| e.code), Some(400));
 
         let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
         let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
