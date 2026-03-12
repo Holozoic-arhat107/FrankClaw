@@ -82,6 +82,13 @@ pub fn optimize_context(
     system_prompt: Option<&str>,
 ) -> ContextWindow {
     let budget = available_input_budget(model, system_prompt);
+
+    // Always repair orphaned tool messages before sending to the API.
+    // This prevents errors like "messages with role 'tool' must be a response
+    // to a preceding message with 'tool_calls'" from OpenAI.
+    let mut messages = messages;
+    repair_tool_pairing(&mut messages);
+
     let total_tokens = estimate_messages_tokens(&messages);
 
     if total_tokens <= budget {
@@ -139,9 +146,24 @@ pub fn optimize_context(
 /// corresponding Tool result was pruned (or vice versa), remove the
 /// orphaned entry to prevent API errors.
 pub fn repair_tool_pairing(messages: &mut Vec<CompletionMessage>) {
-    // Remove leading Tool messages (orphaned results with no preceding tool_call).
-    while messages.first().is_some_and(|m| m.role == Role::Tool) {
-        messages.remove(0);
+    // Full scan: remove any Tool message not immediately preceded by an Assistant
+    // message containing a tool_call marker. This prevents OpenAI's
+    // "messages with role 'tool' must be a response to a preceding message with
+    // 'tool_calls'" error.
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role == Role::Tool {
+            let has_preceding_tool_call = i > 0
+                && messages[i - 1].role == Role::Assistant
+                && messages[i - 1].content.contains("[tool_call:");
+            // Also allow consecutive Tool messages after one that had a valid predecessor.
+            let follows_valid_tool = i > 0 && messages[i - 1].role == Role::Tool;
+            if !has_preceding_tool_call && !follows_valid_tool {
+                messages.remove(i);
+                continue;
+            }
+        }
+        i += 1;
     }
 
     // Remove trailing Assistant messages that contain tool_call markers
@@ -317,6 +339,57 @@ mod tests {
         repair_tool_pairing(&mut messages);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn repair_tool_pairing_removes_mid_conversation_orphans() {
+        let mut messages = vec![
+            msg(Role::User, "hello"),
+            msg(Role::Assistant, "hi there"),
+            msg(Role::Tool, "{\"result\": \"orphaned mid-conversation\"}"),
+            msg(Role::User, "what about this?"),
+            msg(Role::Assistant, "sure"),
+        ];
+
+        repair_tool_pairing(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert_eq!(messages[2].role, Role::User);
+        assert_eq!(messages[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn repair_tool_pairing_keeps_valid_tool_pairs() {
+        let mut messages = vec![
+            msg(Role::User, "search for cats"),
+            msg(Role::Assistant, "searching [tool_call:search {\"q\": \"cats\"}]"),
+            msg(Role::Tool, "{\"results\": [\"cat1\", \"cat2\"]}"),
+            msg(Role::User, "thanks"),
+        ];
+
+        repair_tool_pairing(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].role, Role::Tool);
+    }
+
+    #[test]
+    fn optimize_context_strips_orphaned_tools_even_within_budget() {
+        let model = test_model(100_000);
+        let messages = vec![
+            msg(Role::User, "hello"),
+            msg(Role::Assistant, "hi"),
+            msg(Role::Tool, "{\"orphaned\": true}"),
+            msg(Role::User, "test"),
+        ];
+
+        let result = optimize_context(messages, &model, None);
+        assert!(!result.compacted);
+        // Orphaned tool message should be removed even without pruning.
+        for m in &result.messages {
+            assert_ne!(m.role, Role::Tool);
+        }
+        assert_eq!(result.messages.len(), 3);
     }
 
     #[test]
