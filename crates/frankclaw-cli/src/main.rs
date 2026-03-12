@@ -64,7 +64,7 @@ enum Command {
 
     /// Print a supported channel config example.
     ConfigExample {
-        /// Channel example to print: web, telegram, discord, slack, signal, whatsapp.
+        /// Channel example to print: web, telegram, discord, slack, signal, whatsapp, email.
         #[arg(long)]
         channel: String,
     },
@@ -87,7 +87,7 @@ enum Command {
 
     /// Generate a secure starter config for a chosen channel profile.
     Onboard {
-        /// Starter channel profile: web, telegram, whatsapp, slack, discord, signal.
+        /// Starter channel profile: web, telegram, whatsapp, slack, discord, signal, email.
         #[arg(long, default_value = "web")]
         channel: String,
 
@@ -365,7 +365,7 @@ async fn main() -> anyhow::Result<()> {
         Command::ConfigExample { channel } => {
             let example = supported_channel_example(&channel)
                 .ok_or_else(|| anyhow::anyhow!(
-                    "unsupported channel example '{}'; expected web, telegram, discord, slack, signal, or whatsapp",
+                    "unsupported channel example '{}'; expected web, telegram, discord, slack, signal, whatsapp, or email",
                     channel
                 ))?;
             println!("{example}");
@@ -1061,7 +1061,7 @@ fn collect_doctor_warnings(
 }
 
 fn group_surface_needs_guard(channel_id: &str) -> bool {
-    matches!(channel_id, "telegram" | "discord" | "slack" | "signal" | "whatsapp")
+    matches!(channel_id, "telegram" | "discord" | "slack" | "signal" | "whatsapp" | "email")
 }
 
 fn collect_browser_tool_warnings(
@@ -1276,8 +1276,25 @@ fn build_onboard_config(
             })],
             extra: serde_json::json!({}),
         },
+        "email" => ChannelConfig {
+            enabled: true,
+            accounts: vec![serde_json::json!({
+                "imap_server": "imap.gmail.com",
+                "imap_port": 993,
+                "smtp_server": "smtp.gmail.com",
+                "smtp_port": 587,
+                "imap_user_env": "EMAIL_USER",
+                "imap_password_env": "EMAIL_PASSWORD",
+                "smtp_user_env": "EMAIL_USER",
+                "smtp_password_env": "EMAIL_PASSWORD",
+                "smtp_from_env": "EMAIL_USER",
+                "poll_interval_secs": 30,
+                "allowed_senders": []
+            })],
+            extra: serde_json::json!({}),
+        },
         other => anyhow::bail!(
-            "unsupported onboard channel '{}'; expected web, telegram, whatsapp, slack, discord, or signal",
+            "unsupported onboard channel '{}'; expected web, telegram, whatsapp, slack, discord, signal, or email",
             other
         ),
     };
@@ -1293,6 +1310,7 @@ fn supported_channel_example(channel: &str) -> Option<&'static str> {
         "slack" => Some(include_str!("../../../examples/channels/slack.json")),
         "signal" => Some(include_str!("../../../examples/channels/signal.json")),
         "whatsapp" => Some(include_str!("../../../examples/channels/whatsapp.json")),
+        "email" => Some(include_str!("../../../examples/channels/email.json")),
         _ => None,
     }
 }

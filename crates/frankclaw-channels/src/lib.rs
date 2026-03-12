@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod discord;
+pub mod email;
 mod inbound_media;
 mod media_text;
 mod outbound_media;
@@ -199,9 +200,104 @@ fn build_channel(channel_id: &ChannelId, channel_config: &ChannelConfig) -> Resu
                 slack::SlackChannel::new(app_token, bot_token),
             )))
         }
+        "email" => {
+            let account = first_account(channel_id, channel_config)?;
+            let imap_server = resolve_channel_value(
+                account,
+                &["imap_server"],
+                &["imap_server_env"],
+                None,
+                "email",
+                "IMAP server",
+            )?;
+            let imap_port = account
+                .get("imap_port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(993) as u16;
+            let imap_user = resolve_channel_value(
+                account,
+                &["imap_user", "user"],
+                &["imap_user_env"],
+                None,
+                "email",
+                "IMAP user",
+            )?;
+            let imap_password = resolve_channel_secret(
+                account,
+                &["imap_password", "password"],
+                &["imap_password_env"],
+                "EMAIL_PASSWORD",
+                "email",
+            )?;
+            let smtp_server = resolve_channel_value(
+                account,
+                &["smtp_server"],
+                &["smtp_server_env"],
+                None,
+                "email",
+                "SMTP server",
+            )?;
+            let smtp_port = account
+                .get("smtp_port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(587) as u16;
+            let smtp_user = resolve_channel_value(
+                account,
+                &["smtp_user", "user"],
+                &["smtp_user_env"],
+                None,
+                "email",
+                "SMTP user",
+            )?;
+            let smtp_password = resolve_channel_secret(
+                account,
+                &["smtp_password", "password"],
+                &["smtp_password_env"],
+                "EMAIL_PASSWORD",
+                "email",
+            )?;
+            let smtp_from = resolve_channel_value(
+                account,
+                &["smtp_from", "from", "user"],
+                &["smtp_from_env"],
+                None,
+                "email",
+                "SMTP from address",
+            )?;
+            let poll_interval_secs = account
+                .get("poll_interval_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30);
+            let allowed_senders: Vec<String> = account
+                .get("allowed_senders")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(LoadedChannel::Standard(Arc::new(
+                email::EmailChannel::new(
+                    imap_server,
+                    imap_port,
+                    imap_user,
+                    imap_password,
+                    smtp_server,
+                    smtp_port,
+                    smtp_user,
+                    smtp_password,
+                    smtp_from,
+                    poll_interval_secs,
+                    allowed_senders,
+                ),
+            )))
+        }
         other => Err(FrankClawError::ConfigValidation {
             msg: format!(
-                "unsupported enabled channel '{}'; currently supported: web, telegram, discord, signal, slack, whatsapp",
+                "unsupported enabled channel '{}'; currently supported: web, telegram, discord, signal, slack, whatsapp, email",
                 other
             ),
         }),
