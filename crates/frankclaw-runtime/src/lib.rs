@@ -376,6 +376,14 @@ impl Runtime {
                 });
             }
 
+            // Stream any intermediate text content to the channel so the user
+            // sees progress during multi-round tool execution instead of silence.
+            if let Some(ref tx) = request.stream_tx {
+                if !response.content.trim().is_empty() {
+                    let _ = tx.send(StreamDelta::Text(response.content.clone())).await;
+                }
+            }
+
             if response.tool_calls.len() > remaining_tool_calls {
                 return Err(FrankClawError::AgentRuntime {
                     msg: format!(
@@ -1865,6 +1873,90 @@ mod tests {
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].provider_id, "primary");
         assert!(health[0].healthy);
+
+        let _ = std::fs::remove_file(temp);
+    }
+
+    #[tokio::test]
+    async fn runtime_streams_intermediate_text_during_tool_rounds() {
+        let temp = std::env::temp_dir().join(format!(
+            "frankclaw-runtime-stream-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let sessions = Arc::new(
+            SqliteSessionStore::open(&temp, None).expect("sessions should open"),
+        );
+        let mut config = FrankClawConfig::default();
+        config
+            .agents
+            .agents
+            .get_mut(&AgentId::default_agent())
+            .unwrap()
+            .tools = vec!["session.inspect".into()];
+
+        // Round 1: model returns text + tool call
+        // Round 2: model returns final response (no tool calls)
+        let provider = Arc::new(MockProvider::scripted(
+            "primary",
+            "mock-primary",
+            vec![
+                Some(MockResponse {
+                    content: "Let me check that for you...".into(),
+                    tool_calls: vec![ToolCallResponse {
+                        id: "call-1".into(),
+                        name: "session.inspect".into(),
+                        arguments: r#"{"limit": 5}"#.into(),
+                    }],
+                    finish_reason: FinishReason::ToolUse,
+                }),
+                Some(MockResponse {
+                    content: "Here are the results.".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: FinishReason::Stop,
+                }),
+            ],
+        ));
+
+        let runtime = Runtime::from_providers(
+            &config,
+            sessions as Arc<dyn SessionStore>,
+            vec![provider],
+        )
+        .await
+        .expect("runtime should build");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+
+        let response = runtime
+            .chat(ChatRequest {
+                agent_id: None,
+                session_key: None,
+                message: "check session".into(),
+                attachments: Vec::new(),
+                model_id: Some("mock-primary".into()),
+                max_tokens: None,
+                temperature: None,
+                stream_tx: Some(tx),
+                thinking_budget: None,
+            })
+            .await
+            .expect("chat should succeed");
+
+        assert_eq!(response.content, "Here are the results.");
+
+        // The intermediate text from round 1 should have been streamed.
+        let mut received_intermediate = false;
+        while let Ok(delta) = rx.try_recv() {
+            if let StreamDelta::Text(text) = delta {
+                if text.contains("Let me check") {
+                    received_intermediate = true;
+                }
+            }
+        }
+        assert!(
+            received_intermediate,
+            "should have received intermediate text during tool round"
+        );
 
         let _ = std::fs::remove_file(temp);
     }
