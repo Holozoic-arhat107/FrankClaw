@@ -7,6 +7,7 @@ use tracing::debug;
 
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::model::*;
+use frankclaw_core::types::Role;
 
 use crate::sse::SseDecoder;
 
@@ -161,10 +162,47 @@ fn build_request_body(request: &CompletionRequest) -> serde_json::Value {
         .messages
         .iter()
         .map(|msg| {
-            serde_json::json!({
-                "role": msg.role,
-                "content": msg.content,
-            })
+            if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
+                // Assistant message with tool calls → content blocks.
+                let mut content_blocks = Vec::new();
+                let trimmed = msg.content.trim();
+                // Only add text block if there's non-marker content.
+                if !trimmed.is_empty() && !trimmed.starts_with("[tool_call:") {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": trimmed,
+                    }));
+                }
+                for tc in &msg.tool_calls {
+                    let input = serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    content_blocks.push(serde_json::json!({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": input,
+                    }));
+                }
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": content_blocks,
+                })
+            } else if msg.role == Role::Tool {
+                // Tool results → user message with tool_result content block.
+                serde_json::json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.tool_call_id.as_deref().unwrap_or("unknown"),
+                        "content": msg.content,
+                    }],
+                })
+            } else {
+                serde_json::json!({
+                    "role": msg.role,
+                    "content": msg.content,
+                })
+            }
         })
         .collect();
 

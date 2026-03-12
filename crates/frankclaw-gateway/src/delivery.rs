@@ -517,6 +517,7 @@ fn telegram_attachment_batch_kind(mime_type: &str) -> TelegramAttachmentBatchKin
 
 fn max_chars_for_channel(channel_id: &str) -> Option<usize> {
     match channel_id {
+        "whatsapp" => Some(4000),
         "discord" => Some(1900),
         "telegram" => Some(3500),
         "slack" => Some(3500),

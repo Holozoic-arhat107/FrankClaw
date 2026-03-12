@@ -88,6 +88,9 @@ pub fn optimize_context(
     // to a preceding message with 'tool_calls'" from OpenAI.
     let mut messages = messages;
     repair_tool_pairing(&mut messages);
+    // Merge consecutive same-role messages to satisfy providers requiring
+    // strict alternation (Anthropic, Gemini).
+    merge_consecutive_same_role(&mut messages);
 
     let total_tokens = estimate_messages_tokens(&messages);
 
@@ -144,15 +147,16 @@ pub fn optimize_context(
 /// orphaned entry to prevent API errors.
 pub fn repair_tool_pairing(messages: &mut Vec<CompletionMessage>) {
     // Full scan: remove any Tool message not immediately preceded by an Assistant
-    // message containing a tool_call marker. This prevents OpenAI's
-    // "messages with role 'tool' must be a response to a preceding message with
-    // 'tool_calls'" error.
+    // message with tool_calls (structured) or a text marker, or another valid Tool.
     let mut i = 0;
     while i < messages.len() {
         if messages[i].role == Role::Tool {
             let has_preceding_tool_call = i > 0
                 && messages[i - 1].role == Role::Assistant
-                && messages[i - 1].content.contains("[tool_call:");
+                && (
+                    !messages[i - 1].tool_calls.is_empty()
+                    || messages[i - 1].content.contains("[tool_call:")
+                );
             // Also allow consecutive Tool messages after one that had a valid predecessor.
             let follows_valid_tool = i > 0 && messages[i - 1].role == Role::Tool;
             if !has_preceding_tool_call && !follows_valid_tool {
@@ -163,13 +167,31 @@ pub fn repair_tool_pairing(messages: &mut Vec<CompletionMessage>) {
         i += 1;
     }
 
-    // Remove trailing Assistant messages that contain tool_call markers
-    // but have no following Tool results.
-    while messages
-        .last()
-        .is_some_and(|m| m.role == Role::Assistant && m.content.contains("[tool_call:"))
-    {
+    // Remove trailing Assistant messages that have tool_calls but no following results.
+    while messages.last().is_some_and(|m| {
+        m.role == Role::Assistant
+            && (!m.tool_calls.is_empty() || m.content.contains("[tool_call:"))
+    }) {
         messages.pop();
+    }
+}
+
+/// Merge consecutive messages with the same role to satisfy providers
+/// that require strict alternation (Anthropic, Gemini).
+pub fn merge_consecutive_same_role(messages: &mut Vec<CompletionMessage>) {
+    let mut i = 1;
+    while i < messages.len() {
+        if messages[i].role == messages[i - 1].role
+            && messages[i].role != Role::Tool
+            && messages[i - 1].tool_calls.is_empty()
+            && messages[i].tool_calls.is_empty()
+        {
+            let content = messages.remove(i).content;
+            messages[i - 1].content.push('\n');
+            messages[i - 1].content.push_str(&content);
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -365,6 +387,84 @@ mod tests {
         repair_tool_pairing(&mut messages);
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[2].role, Role::Tool);
+    }
+
+    #[test]
+    fn repair_tool_pairing_keeps_structured_tool_calls() {
+        use frankclaw_core::model::ToolCallResponse;
+        let mut messages = vec![
+            msg(Role::User, "search for cats"),
+            CompletionMessage::assistant_tool_calls(
+                "searching",
+                vec![ToolCallResponse {
+                    id: "call-1".into(),
+                    name: "search".into(),
+                    arguments: r#"{"q":"cats"}"#.into(),
+                }],
+            ),
+            CompletionMessage::tool_result("call-1", r#"{"results": ["cat1"]}"#),
+            msg(Role::User, "thanks"),
+        ];
+
+        repair_tool_pairing(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].role, Role::Tool);
+    }
+
+    #[test]
+    fn repair_tool_pairing_removes_trailing_structured_tool_calls() {
+        use frankclaw_core::model::ToolCallResponse;
+        let mut messages = vec![
+            msg(Role::User, "hello"),
+            CompletionMessage::assistant_tool_calls(
+                "let me search",
+                vec![ToolCallResponse {
+                    id: "call-1".into(),
+                    name: "search".into(),
+                    arguments: "{}".into(),
+                }],
+            ),
+        ];
+
+        repair_tool_pairing(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn merge_consecutive_same_role_merges_users() {
+        let mut messages = vec![
+            msg(Role::User, "hello"),
+            msg(Role::User, "world"),
+            msg(Role::Assistant, "hi"),
+        ];
+
+        merge_consecutive_same_role(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].content.contains("hello"));
+        assert!(messages[0].content.contains("world"));
+    }
+
+    #[test]
+    fn merge_consecutive_same_role_preserves_tool_messages() {
+        use frankclaw_core::model::ToolCallResponse;
+        let mut messages = vec![
+            msg(Role::User, "search"),
+            CompletionMessage::assistant_tool_calls(
+                "searching",
+                vec![ToolCallResponse {
+                    id: "call-1".into(),
+                    name: "search".into(),
+                    arguments: "{}".into(),
+                }],
+            ),
+            CompletionMessage::tool_result("call-1", "result"),
+            msg(Role::Assistant, "here are the results"),
+        ];
+
+        merge_consecutive_same_role(&mut messages);
+        // Should NOT merge the assistant_tool_calls with the next assistant message
+        assert_eq!(messages.len(), 4);
     }
 
     #[test]

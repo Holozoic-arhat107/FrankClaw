@@ -382,8 +382,35 @@ impl Runtime {
                 // Detect tool call loops (identical name+args repeated).
                 tool_tracker.record(&tool_call.name, &tool_call.arguments)?;
 
-                let arguments = parse_tool_arguments(&tool_call)?;
-                let tool_output = self
+                let arguments = match parse_tool_arguments(&tool_call) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        // Return error result to model instead of aborting the turn.
+                        let error_content = format!(
+                            "{{\"error\": \"invalid arguments for tool '{}': {}\"}}",
+                            tool_call.name, err
+                        );
+                        self.append_transcript_entry(
+                            &session_key,
+                            next_seq,
+                            Role::Tool,
+                            error_content.clone(),
+                            Some(serde_json::json!({
+                                "tool_name": tool_call.name,
+                                "tool_call_id": tool_call.id,
+                                "is_error": true,
+                            })),
+                        )
+                        .await?;
+                        request_messages.push(CompletionMessage::tool_result(
+                            &tool_call.id,
+                            error_content,
+                        ));
+                        next_seq += 1;
+                        continue;
+                    }
+                };
+                let tool_result = self
                     .tools
                     .invoke_allowed(
                         &agent.tools,
@@ -395,7 +422,40 @@ impl Runtime {
                             sessions: self.sessions.clone(),
                         },
                     )
-                    .await?;
+                    .await;
+                let tool_output = match tool_result {
+                    Ok(output) => output,
+                    Err(err) => {
+                        // Return synthetic error result so the model can recover.
+                        let error_content = format!(
+                            "{{\"error\": \"tool '{}' failed: {}\"}}",
+                            tool_call.name, err
+                        );
+                        tracing::warn!(
+                            tool = %tool_call.name,
+                            error = %err,
+                            "tool invocation failed — returning error result to model"
+                        );
+                        self.append_transcript_entry(
+                            &session_key,
+                            next_seq,
+                            Role::Tool,
+                            error_content.clone(),
+                            Some(serde_json::json!({
+                                "tool_name": tool_call.name,
+                                "tool_call_id": tool_call.id,
+                                "is_error": true,
+                            })),
+                        )
+                        .await?;
+                        request_messages.push(CompletionMessage::tool_result(
+                            &tool_call.id,
+                            error_content,
+                        ));
+                        next_seq += 1;
+                        continue;
+                    }
+                };
                 let raw_content = serde_json::to_string(&serde_json::json!({
                     "tool": tool_output.name,
                     "output": tool_output.output,
@@ -1452,37 +1512,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_rejects_invalid_model_tool_arguments() {
+    async fn runtime_returns_error_result_for_invalid_tool_arguments() {
         let temp = std::env::temp_dir().join(format!(
             "frankclaw-runtime-tool-args-{}.db",
             uuid::Uuid::new_v4()
         ));
-        let sessions = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
+        let sessions: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
         let mut config = FrankClawConfig::default();
         config.agents.agents.get_mut(&AgentId::default_agent()).unwrap().tools =
             vec!["session.inspect".into()];
 
+        // First response: tool call with invalid JSON args.
+        // Second response: model sees the error result and replies with text.
         let runtime = Runtime::from_providers(
             &config,
-            sessions as Arc<dyn SessionStore>,
+            sessions.clone(),
             vec![Arc::new(MockProvider::scripted(
                 "primary",
                 "mock-primary",
-                vec![Some(MockResponse {
-                    content: String::new(),
-                    tool_calls: vec![ToolCallResponse {
-                        id: "call-1".into(),
-                        name: "session.inspect".into(),
-                        arguments: "{not-json}".into(),
-                    }],
-                    finish_reason: FinishReason::ToolUse,
-                })],
+                vec![
+                    Some(MockResponse {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallResponse {
+                            id: "call-1".into(),
+                            name: "session.inspect".into(),
+                            arguments: "{not-json}".into(),
+                        }],
+                        finish_reason: FinishReason::ToolUse,
+                    }),
+                    Some(MockResponse {
+                        content: "I see the tool had invalid arguments".into(),
+                        tool_calls: Vec::new(),
+                        finish_reason: FinishReason::Stop,
+                    }),
+                ],
             ))],
         )
         .await
         .expect("runtime should build");
 
-        let err = runtime
+        let result = runtime
             .chat(ChatRequest {
                 agent_id: None,
                 session_key: None,
@@ -1495,10 +1564,20 @@ mod tests {
                 thinking_budget: None,
             })
             .await
-            .expect_err("invalid tool args should fail");
+            .expect("should succeed with error result fed back to model");
 
-        assert!(matches!(err, FrankClawError::AgentRuntime { .. }));
-        assert!(err.to_string().contains("invalid arguments for tool"));
+        // Model should have received the error result and responded.
+        assert!(result.content.contains("invalid arguments"));
+
+        // Transcript should include the error tool result.
+        let transcript = sessions
+            .get_transcript(&result.session_key, 100, None)
+            .await
+            .expect("transcript should load");
+        let error_entry = transcript
+            .iter()
+            .find(|e| e.role == Role::Tool && e.content.contains("invalid arguments"));
+        assert!(error_entry.is_some(), "transcript should contain error tool result");
 
         let _ = std::fs::remove_file(temp);
     }
