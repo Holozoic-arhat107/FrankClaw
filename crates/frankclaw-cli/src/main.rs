@@ -2592,6 +2592,55 @@ fn audit_tool_policies(
                 });
             }
         }
+
+        // Check sandbox status for bash tool.
+        let sandbox = frankclaw_tools::bash::SandboxMode::from_env();
+        match sandbox {
+            frankclaw_tools::bash::SandboxMode::None => {
+                if !matches!(bash_policy, frankclaw_tools::bash::BashPolicy::DenyAll) {
+                    findings.push(Finding {
+                        severity: Severity::Medium,
+                        category: "tools",
+                        message: "Bash tool has no sandbox — commands run directly on the host".into(),
+                        remediation: "Set FRANKCLAW_SANDBOX=ai-jail or ai-jail-lockdown for OS-level isolation (requires ai-jail)".into(),
+                    });
+                }
+            }
+            frankclaw_tools::bash::SandboxMode::AiJail => {
+                if frankclaw_tools::bash::SandboxMode::is_available() {
+                    findings.push(Finding {
+                        severity: Severity::Info,
+                        category: "tools",
+                        message: "Bash tool sandbox: ai-jail (bubblewrap + landlock, network allowed)".into(),
+                        remediation: "For stricter isolation, use FRANKCLAW_SANDBOX=ai-jail-lockdown".into(),
+                    });
+                } else {
+                    findings.push(Finding {
+                        severity: Severity::High,
+                        category: "tools",
+                        message: "FRANKCLAW_SANDBOX=ai-jail is set but ai-jail binary not found on PATH".into(),
+                        remediation: "Install ai-jail or unset FRANKCLAW_SANDBOX".into(),
+                    });
+                }
+            }
+            frankclaw_tools::bash::SandboxMode::AiJailLockdown => {
+                if frankclaw_tools::bash::SandboxMode::is_available() {
+                    findings.push(Finding {
+                        severity: Severity::Info,
+                        category: "tools",
+                        message: "Bash tool sandbox: ai-jail lockdown (read-only filesystem, no network)".into(),
+                        remediation: "This is the most restrictive sandbox mode".into(),
+                    });
+                } else {
+                    findings.push(Finding {
+                        severity: Severity::High,
+                        category: "tools",
+                        message: "FRANKCLAW_SANDBOX=ai-jail-lockdown is set but ai-jail binary not found on PATH".into(),
+                        remediation: "Install ai-jail or unset FRANKCLAW_SANDBOX".into(),
+                    });
+                }
+            }
+        }
     }
 
     let browser_mutations = frankclaw_tools::ToolPolicy::from_env().allow_browser_mutations;

@@ -21,8 +21,11 @@ For concrete setup snippets for the supported channels and browser runtime, see 
 - **Scheduled jobs** — Cron-based task scheduling with agent delivery
 - **Canvas host** — local authenticated visual workspace surface
 - **Bounded tools** — session inspection plus Chromium-backed `browser.open`, `browser.extract`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.wait`, `browser.press`, `browser.sessions`, and `browser.close`
-- **Operator support** — doctor, status, remote exposure checks, onboarding, and systemd unit generation
+- **Bash tool** — Shell command execution with timeout, output truncation, and configurable security policy (deny-all, allowlist, or allow-all)
+- **Optional sandbox** — [ai-jail](https://github.com/akitaonrails/ai-jail) integration (bubblewrap + landlock) for OS-level command isolation, complementary to the bash allowlist
+- **Operator support** — interactive setup wizard, doctor diagnostics, security audit with severity ratings, process management (start/stop daemon), status, remote exposure checks, onboarding, and systemd unit generation
 - **Docker runtime** — `docker compose up gateway chromium` starts the gateway plus a local DevTools endpoint for browser tools
+- **Prompt templates** — All LLM-facing text lives in editable markdown files, embedded at compile time
 - **Media pipeline** — File handling with SSRF protection and filename sanitization
 - **Plugin system** — Trait-based channel and provider adapters
 - **Zero unsafe code** — `#![forbid(unsafe_code)]` on every crate
@@ -66,6 +69,8 @@ For concrete setup snippets for the supported channels and browser runtime, see 
 | `frankclaw-sessions` | SQLite session store with optional encrypted transcripts |
 | `frankclaw-models` | AI provider adapters (OpenAI, Anthropic, Ollama) with failover chain |
 | `frankclaw-channels` | Messaging channel adapters (Web, Telegram, Discord, Slack, Signal, WhatsApp) |
+| `frankclaw-runtime` | Agent runtime, prompt templates, subagent orchestration, context compaction |
+| `frankclaw-tools` | Tool registry, bash execution (with optional ai-jail sandbox), browser tools |
 | `frankclaw-memory` | Vector search traits for long-term memory |
 | `frankclaw-cron` | Scheduled job service |
 | `frankclaw-media` | File storage with SSRF-safe HTTP fetcher |
@@ -277,10 +282,14 @@ FRANKCLAW_BROWSER_DEVTOOLS_URL=http://127.0.0.1:9223/ \
 frankclaw gateway         Start the gateway server
 frankclaw gen-token       Generate a 256-bit auth token
 frankclaw hash-password   Hash a password with Argon2id for config
+frankclaw setup           Interactive setup wizard (provider, channel, auth)
 frankclaw onboard         Create a starter config for a supported channel profile
 frankclaw init            Create a blank config with secure defaults
 frankclaw check           Validate config file
 frankclaw doctor          Run high-signal validation and readiness checks
+frankclaw audit           Security audit with severity-rated findings
+frankclaw start           Start the gateway as a background daemon
+frankclaw stop            Stop the running daemon
 frankclaw config-example  Print a supported channel config snippet
 frankclaw status          Show runtime and exposure status
 frankclaw remote-status   Show remote exposure posture
@@ -349,7 +358,7 @@ Some channels require public webhook URLs. **Mitigation:** always configure webh
 
 #### 5. Media Files in Sandbox Mode
 
-Files shared into Docker/Podman sandboxes are accessible to agent code. **Mitigation:** use a dedicated ephemeral media directory, read-only bind mounts where possible, and automatic cleanup after sandbox exits.
+Files shared into sandboxed environments (ai-jail, Docker) are accessible to agent code. **Mitigation:** use a dedicated ephemeral media directory, read-only bind mounts where possible, and automatic cleanup after sandbox exits. With `ai-jail --lockdown`, the filesystem is read-only by default.
 
 #### 6. Memory Vector Embeddings
 
@@ -468,6 +477,10 @@ FrankClaw uses a single JSON config file. All fields have secure defaults.
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `FRANKCLAW_BASH_POLICY` | Bash tool policy: `deny-all` (default), `allow-all`, or comma-separated binary allowlist |
+| `FRANKCLAW_SANDBOX` | Optional sandbox: `ai-jail` or `ai-jail-lockdown` (requires [ai-jail](https://github.com/akitaonrails/ai-jail)) |
+| `FRANKCLAW_ALLOW_BROWSER_MUTATIONS` | Set to `1` to enable browser click/type/press tools |
+| `FRANKCLAW_BROWSER_DEVTOOLS_URL` | Chromium DevTools endpoint (default: `http://127.0.0.1:9222/`) |
 
 ## Development
 
@@ -502,6 +515,8 @@ frankclaw/
 │   ├── frankclaw-channels/    # Messaging channel adapters
 │   ├── frankclaw-memory/      # Vector memory traits
 │   ├── frankclaw-cron/        # Scheduled jobs
+│   ├── frankclaw-runtime/     # Agent runtime & prompt templates
+│   ├── frankclaw-tools/       # Tool registry, bash & browser tools
 │   ├── frankclaw-media/       # Media file handling
 │   ├── frankclaw-plugin-sdk/  # Plugin system
 │   └── frankclaw-cli/         # CLI binary
@@ -526,7 +541,7 @@ See [PARITY_TODO.md](PARITY_TODO.md) for the current parity tracker.
 
 - [ ] Long-tail attachment/media edge cases on supported channels
 - [x] Streaming SSE response handling for OpenAI/Anthropic model providers
-- [ ] Agent runtime with sandbox (Bubblewrap/Docker/Podman)
+- [x] Agent runtime with optional ai-jail sandbox (bubblewrap + landlock)
 - [ ] LanceDB vector memory backend
 - [ ] Companion nodes and apps
 - [ ] Voice

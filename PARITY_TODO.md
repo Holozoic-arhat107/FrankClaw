@@ -104,9 +104,10 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
 
 ### Runtime & Execution
 
-- [x] **Sandboxed Agent Runtime** — **SKIPPED**: Docker sandboxing is heavy infrastructure.
-  FrankClaw already has bash tool policy (deny-all/allowlist) which covers the security
-  angle without requiring Docker as a dependency.
+- [x] **Sandboxed Agent Runtime** — **DONE**: Optional `ai-jail` integration (bubblewrap +
+  landlock) instead of Docker. Lighter weight, per-command spawning. Set
+  `FRANKCLAW_SANDBOX=ai-jail` or `ai-jail-lockdown`. Security audit reports sandbox status.
+  Works alongside bash policy allowlist as complementary layers.
 
 - [x] **Bash Tools** — Shell command execution with timeout enforcement, output truncation,
   working directory support, and configurable security policy (deny-all, allow-all, or

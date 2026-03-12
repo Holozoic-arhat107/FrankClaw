@@ -72,6 +72,48 @@ impl Default for BashPolicy {
     }
 }
 
+/// Optional sandbox mode using `ai-jail` (bubblewrap + landlock).
+///
+/// When enabled, all bash commands are executed inside an `ai-jail` sandbox,
+/// providing OS-level isolation (mount namespaces, seccomp, landlock) on top
+/// of the `BashPolicy` allowlist.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SandboxMode {
+    /// No sandboxing — commands run directly via `sh -c`.
+    #[default]
+    None,
+    /// Wrap commands with `ai-jail` (default profile: network allowed, project dir writable).
+    AiJail,
+    /// Wrap commands with `ai-jail --lockdown` (read-only filesystem, no network).
+    AiJailLockdown,
+}
+
+impl SandboxMode {
+    /// Create from environment variable `FRANKCLAW_SANDBOX`.
+    ///
+    /// Values:
+    /// - unset or "none" → None
+    /// - "ai-jail" → AiJail
+    /// - "ai-jail-lockdown" → AiJailLockdown
+    pub fn from_env() -> Self {
+        match std::env::var("FRANKCLAW_SANDBOX").ok().as_deref() {
+            Some("ai-jail") => Self::AiJail,
+            Some("ai-jail-lockdown") => Self::AiJailLockdown,
+            _ => Self::None,
+        }
+    }
+
+    /// Check if `ai-jail` binary is available on PATH.
+    pub fn is_available() -> bool {
+        std::process::Command::new("ai-jail")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+}
+
 impl BashPolicy {
     /// Check if a command is allowed by the policy.
     fn allows(&self, command: &str) -> bool {
@@ -116,17 +158,31 @@ impl BashPolicy {
 /// Bash tool for executing shell commands.
 pub struct BashTool {
     policy: BashPolicy,
+    sandbox: SandboxMode,
 }
 
 impl BashTool {
     pub fn new(policy: BashPolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            sandbox: SandboxMode::None,
+        }
+    }
+
+    pub fn with_sandbox(policy: BashPolicy, sandbox: SandboxMode) -> Self {
+        Self { policy, sandbox }
     }
 
     pub fn from_env() -> Self {
         Self {
             policy: BashPolicy::from_env(),
+            sandbox: SandboxMode::from_env(),
         }
+    }
+
+    /// Returns the current sandbox mode.
+    pub fn sandbox_mode(&self) -> &SandboxMode {
+        &self.sandbox
     }
 }
 
@@ -193,7 +249,7 @@ impl Tool for BashTool {
             .min(MAX_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
 
-        let result = execute_command(&args.command, workdir.as_ref(), timeout).await?;
+        let result = execute_command(&args.command, workdir.as_ref(), timeout, &self.sandbox).await?;
 
         serde_json::to_value(&result).map_err(|e| FrankClawError::Internal {
             msg: format!("failed to serialize bash result: {e}"),
@@ -206,11 +262,30 @@ async fn execute_command(
     command: &str,
     workdir: Option<&PathBuf>,
     timeout: Duration,
+    sandbox: &SandboxMode,
 ) -> Result<BashResult> {
     let start = std::time::Instant::now();
 
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command);
+    let mut cmd = match sandbox {
+        SandboxMode::None => {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        }
+        SandboxMode::AiJail => {
+            let mut c = Command::new("ai-jail");
+            c.args(["--no-status-bar", "--no-display", "--"]);
+            c.arg("sh").arg("-c").arg(command);
+            c
+        }
+        SandboxMode::AiJailLockdown => {
+            let mut c = Command::new("ai-jail");
+            c.args(["--lockdown", "--no-status-bar", "--no-display", "--"]);
+            c.arg("sh").arg("-c").arg(command);
+            c
+        }
+    };
+
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
@@ -332,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_echo() {
-        let result = execute_command("echo hello", None, Duration::from_secs(10))
+        let result = execute_command("echo hello", None, Duration::from_secs(10), &SandboxMode::None)
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
@@ -343,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_exit_code() {
-        let result = execute_command("exit 42", None, Duration::from_secs(10))
+        let result = execute_command("exit 42", None, Duration::from_secs(10), &SandboxMode::None)
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(42));
@@ -351,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_stderr() {
-        let result = execute_command("echo error >&2", None, Duration::from_secs(10))
+        let result = execute_command("echo error >&2", None, Duration::from_secs(10), &SandboxMode::None)
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
@@ -360,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_timeout() {
-        let result = execute_command("sleep 60", None, Duration::from_secs(1))
+        let result = execute_command("sleep 60", None, Duration::from_secs(1), &SandboxMode::None)
             .await
             .unwrap();
         assert!(result.exit_code.is_none());
@@ -369,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_workdir() {
-        let result = execute_command("pwd", Some(&PathBuf::from("/tmp")), Duration::from_secs(10))
+        let result = execute_command("pwd", Some(&PathBuf::from("/tmp")), Duration::from_secs(10), &SandboxMode::None)
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
@@ -395,6 +470,54 @@ mod tests {
         let result = tool.invoke(args, ctx).await.unwrap();
         assert_eq!(result["exit_code"], 0);
         assert!(result["stdout"].as_str().unwrap().contains("test123"));
+    }
+
+    #[test]
+    fn sandbox_mode_default_is_none() {
+        assert_eq!(SandboxMode::default(), SandboxMode::None);
+    }
+
+    #[test]
+    fn sandbox_mode_variants_are_distinct() {
+        assert_ne!(SandboxMode::None, SandboxMode::AiJail);
+        assert_ne!(SandboxMode::AiJail, SandboxMode::AiJailLockdown);
+        assert_ne!(SandboxMode::None, SandboxMode::AiJailLockdown);
+    }
+
+    #[test]
+    fn bash_tool_with_sandbox_stores_mode() {
+        let tool = BashTool::with_sandbox(BashPolicy::DenyAll, SandboxMode::AiJail);
+        assert_eq!(*tool.sandbox_mode(), SandboxMode::AiJail);
+    }
+
+    #[test]
+    fn bash_tool_with_sandbox_lockdown() {
+        let tool = BashTool::with_sandbox(BashPolicy::AllowAll, SandboxMode::AiJailLockdown);
+        assert_eq!(*tool.sandbox_mode(), SandboxMode::AiJailLockdown);
+    }
+
+    #[test]
+    fn bash_tool_new_defaults_to_no_sandbox() {
+        let tool = BashTool::new(BashPolicy::DenyAll);
+        assert_eq!(*tool.sandbox_mode(), SandboxMode::None);
+    }
+
+    #[tokio::test]
+    #[ignore] // requires ai-jail installed and not already inside a sandbox
+    async fn execute_echo_in_sandbox() {
+        if !SandboxMode::is_available() {
+            return;
+        }
+        let result = execute_command("echo sandboxed", None, Duration::from_secs(30), &SandboxMode::AiJail)
+            .await
+            .unwrap();
+        // If we're already inside a bwrap sandbox, nesting fails — skip gracefully.
+        if result.exit_code == Some(1) && result.stderr.contains("bwrap") {
+            eprintln!("skipping: already inside a bwrap sandbox, cannot nest");
+            return;
+        }
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("sandboxed"));
     }
 
     fn test_context() -> ToolContext {

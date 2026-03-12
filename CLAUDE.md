@@ -8,7 +8,7 @@ FrankClaw is a security-hardened Rust rewrite of OpenClaw (a TypeScript AI assis
 
 ```bash
 cargo check          # Type-check the whole workspace
-cargo test           # Run all 28 tests
+cargo test           # Run all tests (~467)
 cargo build          # Build everything (debug)
 cargo build -r       # Build release (LTO, stripped)
 cargo build -p frankclaw  # Build just the CLI binary
@@ -18,7 +18,7 @@ The binary is at `target/debug/frankclaw` (or `target/release/frankclaw`).
 
 ## Architecture
 
-11 crates in a Cargo workspace under `crates/`:
+13 crates in a Cargo workspace under `crates/`:
 
 | Crate | Purpose |
 |-------|---------|
@@ -27,12 +27,14 @@ The binary is at `target/debug/frankclaw` (or `target/release/frankclaw`).
 | `frankclaw-gateway` | Axum WS+HTTP server, auth middleware, rate limiter, broadcast |
 | `frankclaw-sessions` | SQLite session store with encrypted-at-rest transcripts |
 | `frankclaw-models` | OpenAI, Anthropic, Ollama providers with failover chain |
-| `frankclaw-channels` | Channel adapters (Telegram, Web; more to come) |
+| `frankclaw-channels` | Channel adapters (Telegram, Web, Discord, Slack, Signal, WhatsApp) |
+| `frankclaw-runtime` | Agent runtime, prompt templates (markdown), subagent orchestration, context compaction |
+| `frankclaw-tools` | Tool registry, bash execution (with optional ai-jail sandbox), browser tools (CDP) |
 | `frankclaw-memory` | Vector search traits (LanceDB backend TBD) |
 | `frankclaw-cron` | Scheduled job service with cron expression parsing |
 | `frankclaw-media` | File store with SSRF-safe fetcher, filename sanitization |
 | `frankclaw-plugin-sdk` | Channel plugin registry |
-| `frankclaw-cli` | CLI binary entry point |
+| `frankclaw-cli` | CLI binary entry point (setup, doctor, audit, start/stop, gateway) |
 
 ## Code Conventions
 
@@ -62,13 +64,29 @@ The binary is at `target/debug/frankclaw` (or `target/release/frankclaw`).
 - Media filenames sanitized (path traversal prevention, leading dots stripped)
 - Passwords hashed with Argon2id (t=3, m=64MB, p=4)
 - Session transcripts encrypted at rest with ChaCha20-Poly1305 when master key is provided
+- Bash tool execution controlled by `BashPolicy` (deny-all default) + optional `ai-jail` sandbox
+- `FRANKCLAW_SANDBOX=ai-jail` or `ai-jail-lockdown` wraps commands in bubblewrap+landlock isolation
+- `frankclaw audit` reports severity-rated findings (CRIT/HIGH/MED/LOW/INFO) with CI exit codes
 
 ## Key Paths
 
 - Config: `~/.local/share/frankclaw/frankclaw.json` (or `FRANKCLAW_STATE_DIR`)
 - Sessions DB: `<state_dir>/sessions.db`
+- PID file: `<state_dir>/frankclaw.pid` (daemon mode)
+- Prompt templates: `crates/frankclaw-runtime/prompts/*.md` (embedded at compile time)
 - Default gateway port: `18789`
 - OpenClaw reference: `openclaw/` (gitignored, not part of the build)
+
+## Key Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `FRANKCLAW_CONFIG` | Config file path |
+| `FRANKCLAW_STATE_DIR` | State directory |
+| `FRANKCLAW_BASH_POLICY` | `deny-all` (default), `allow-all`, or comma-separated allowlist |
+| `FRANKCLAW_SANDBOX` | `ai-jail` or `ai-jail-lockdown` (requires ai-jail binary) |
+| `FRANKCLAW_ALLOW_BROWSER_MUTATIONS` | `1` to enable browser click/type/press |
+| `FRANKCLAW_BROWSER_DEVTOOLS_URL` | Chromium DevTools endpoint |
 
 ## Adding a New Channel
 
