@@ -596,6 +596,7 @@ async fn main() -> anyhow::Result<()> {
                     max_tokens: None,
                     temperature: None,
                     stream_tx: None,
+                    thinking_budget: None,
                 })
                 .await?;
 

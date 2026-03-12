@@ -253,6 +253,7 @@ pub async fn chat_send(
             max_tokens,
             temperature,
             stream_tx,
+            thinking_budget: None,
         })
         .await
     {

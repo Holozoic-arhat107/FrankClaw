@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod context;
+pub mod leak_detector;
 pub mod prompts;
 pub mod sanitize;
 pub mod subagent;
@@ -47,6 +48,8 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stream_tx: Option<tokio::sync::mpsc::Sender<StreamDelta>>,
+    /// Extended thinking budget in tokens (Anthropic Claude 3.7+).
+    pub thinking_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +325,7 @@ impl Runtime {
                         temperature: request.temperature,
                         system: system_prompt.clone(),
                         tools: allowed_tools.clone(),
+                        thinking_budget: request.thinking_budget,
                     },
                     request.stream_tx.clone(),
                 )
@@ -405,8 +409,46 @@ impl Runtime {
                 .map_err(|err| FrankClawError::Internal {
                     msg: format!("failed to serialize tool output: {err}"),
                 })?;
+                // Scan tool output for credential leaks before it enters the context.
+                let leak_result = leak_detector::scan_for_leaks(&raw_content);
+                if leak_result.should_block {
+                    let leaked = leak_result
+                        .matches
+                        .iter()
+                        .map(|m| format!("{}({})", m.pattern_name, m.masked_preview))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::warn!(
+                        tool = %tool_call.name,
+                        patterns = %leaked,
+                        "credential leak detected in tool output — blocking"
+                    );
+                    return Err(FrankClawError::AgentRuntime {
+                        msg: format!(
+                            "tool '{}' output contained credential(s): {}. Output blocked.",
+                            tool_call.name, leaked,
+                        ),
+                    });
+                }
+                let safe_content = leak_result
+                    .redacted_content
+                    .as_deref()
+                    .unwrap_or(&raw_content);
+                if !leak_result.matches.is_empty() {
+                    let warned = leak_result
+                        .matches
+                        .iter()
+                        .map(|m| format!("{}({})", m.pattern_name, m.masked_preview))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::warn!(
+                        tool = %tool_call.name,
+                        patterns = %warned,
+                        "potential credential in tool output — redacted/warned"
+                    );
+                }
                 // Truncate oversized tool results to prevent context overflow.
-                let tool_content = truncate_tool_output(&raw_content);
+                let tool_content = truncate_tool_output(safe_content);
                 self.append_transcript_entry(
                     &session_key,
                     next_seq,
@@ -1083,6 +1125,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect("chat should succeed");
@@ -1131,6 +1174,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect("chat should succeed");
@@ -1189,6 +1233,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect("chat should succeed");
@@ -1259,6 +1304,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect("chat should succeed");
@@ -1327,6 +1373,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect("chat should succeed");
@@ -1417,6 +1464,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect_err("invalid tool args should fail");
@@ -1471,6 +1519,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect_err("too many tool calls should fail");
@@ -1584,6 +1633,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 stream_tx: None,
+                thinking_budget: None,
             })
             .await
             .expect_err("loop should be detected");

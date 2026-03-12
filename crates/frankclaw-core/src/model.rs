@@ -75,6 +75,10 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     pub system: Option<String>,
     pub tools: Vec<ToolDef>,
+    /// Extended thinking budget in tokens. When set, the model will use
+    /// internal chain-of-thought reasoning before responding.
+    /// Supported by Anthropic Claude 3.7+.
+    pub thinking_budget: Option<u32>,
 }
 
 /// Risk classification for tools. Determines whether operator approval is needed.

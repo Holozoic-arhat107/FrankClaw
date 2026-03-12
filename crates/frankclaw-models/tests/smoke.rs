@@ -99,6 +99,7 @@ fn simple_request(model: &str, prompt: &str) -> CompletionRequest {
         temperature: Some(0.0),
         system: None,
         tools: Vec::new(),
+        thinking_budget: None,
     }
 }
 
@@ -304,6 +305,7 @@ async fn anthropic_system_prompt() {
         temperature: Some(0.0),
         system: Some("The secret word is 'banana'. Always reply with only the secret word.".into()),
         tools: Vec::new(),
+        thinking_budget: None,
     };
 
     let response = provider

@@ -195,6 +195,18 @@ fn build_request_body(request: &CompletionRequest) -> serde_json::Value {
         body["tools"] = serde_json::json!(tools);
     }
 
+    // Extended thinking support (Claude 3.7+).
+    // When thinking_budget is set, enable extended thinking and allocate
+    // the requested token budget for internal chain-of-thought reasoning.
+    if let Some(budget) = request.thinking_budget {
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": budget,
+        });
+        // Extended thinking requires temperature = 1 (Anthropic API constraint).
+        body["temperature"] = serde_json::json!(1);
+    }
+
     body
 }
 
@@ -481,6 +493,7 @@ fn is_context_overflow(body_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use frankclaw_core::types::Role;
 
     #[test]
     fn apply_stream_event_accumulates_text_blocks() {
@@ -631,5 +644,47 @@ mod tests {
 
         let response = state.finish().expect("response should build");
         assert_eq!(response.tool_calls[0].arguments, "{\"q\":\"claw\"}");
+    }
+
+    #[test]
+    fn build_request_body_includes_thinking_budget() {
+        let request = CompletionRequest {
+            model_id: "claude-sonnet-4-6".into(),
+            messages: vec![CompletionMessage {
+                role: Role::User,
+                content: "think hard".into(),
+            }],
+            max_tokens: Some(4096),
+            temperature: Some(0.5),
+            system: None,
+            tools: vec![],
+            thinking_budget: Some(10000),
+        };
+        let body = build_request_body(&request);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 10000);
+        // Extended thinking forces temperature = 1
+        assert_eq!(body["temperature"], 1);
+    }
+
+    #[test]
+    fn build_request_body_omits_thinking_when_none() {
+        let request = CompletionRequest {
+            model_id: "claude-sonnet-4-6".into(),
+            messages: vec![CompletionMessage {
+                role: Role::User,
+                content: "hello".into(),
+            }],
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            system: None,
+            tools: vec![],
+            thinking_budget: None,
+        };
+        let body = build_request_body(&request);
+        assert!(body.get("thinking").is_none());
+        // Temperature preserved as-is (f32 precision)
+        assert!(body["temperature"].as_f64().unwrap() > 0.69);
+        assert!(body["temperature"].as_f64().unwrap() < 0.71);
     }
 }

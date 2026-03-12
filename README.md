@@ -618,4 +618,6 @@ See [PARITY_TODO.md](docs/PARITY_TODO.md) for the current parity tracker.
 
 ## License
 
-MIT
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Some components are derived from [IronClaw](https://github.com/nearai/ironclaw) (MIT OR Apache-2.0). See [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for details.

@@ -1123,6 +1123,7 @@ async fn process_inbound_message_with_target(
             max_tokens: None,
             temperature: None,
             stream_tx: None,
+            thinking_budget: None,
         })
         .await?;
 
@@ -1393,6 +1394,7 @@ async fn start_cron_runtime(
                         max_tokens: None,
                         temperature: None,
                         stream_tx: None,
+                        thinking_budget: None,
                     })
                     .await
                 {
