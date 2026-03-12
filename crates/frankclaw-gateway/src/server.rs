@@ -1008,9 +1008,60 @@ async fn process_inbound_message(
     state: Arc<GatewayState>,
     inbound: InboundMessage,
 ) -> frankclaw_core::error::Result<()> {
-    process_inbound_message_with_target(state, inbound, None, None)
+    let result = process_inbound_message_with_target(state.clone(), inbound.clone(), None, None)
         .await
-        .map(|_| ())
+        .map(|_| ());
+
+    if let Err(ref err) = result {
+        // Attempt to send a brief error reply to the user so they know something went wrong.
+        // This is best-effort — if the channel itself is broken (e.g. expired token),
+        // we just log the failure and move on.
+        send_error_reply(&state, &inbound, err).await;
+    }
+
+    result
+}
+
+/// Best-effort: send a short error message to the user when inbound processing fails.
+/// Never propagates errors — if delivery fails, it just logs and returns.
+async fn send_error_reply(
+    state: &Arc<GatewayState>,
+    inbound: &InboundMessage,
+    err: &frankclaw_core::error::FrankClawError,
+) {
+    let Some(channel) = state.channel(&inbound.channel) else {
+        return;
+    };
+
+    let error_text = match err {
+        frankclaw_core::error::FrankClawError::RequestTooLarge { .. } => {
+            "Your message is too long. Please shorten it and try again.".to_string()
+        }
+        frankclaw_core::error::FrankClawError::RateLimited { retry_after_secs } => {
+            format!("Too many requests. Please wait {retry_after_secs} seconds and try again.")
+        }
+        _ => "Sorry, I encountered an error processing your message. Please try again later."
+            .to_string(),
+    };
+
+    let outbound = OutboundMessage {
+        channel: inbound.channel.clone(),
+        account_id: inbound.account_id.clone(),
+        to: inbound.sender_id.clone(),
+        thread_id: inbound.thread_id.clone(),
+        text: error_text,
+        attachments: Vec::new(),
+        reply_to: inbound.platform_message_id.clone(),
+    };
+
+    if let Err(send_err) = channel.send(outbound).await {
+        tracing::warn!(
+            channel = %inbound.channel,
+            error = %send_err,
+            original_error = %err,
+            "failed to send error reply to user"
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1547,6 +1598,7 @@ mod tests {
     use frankclaw_channels::{ChannelSet, whatsapp::WhatsAppChannel};
     use frankclaw_core::channel::{ChannelPlugin, SendResult};
     use frankclaw_core::config::{ChannelConfig, ProviderConfig};
+    use frankclaw_core::error::FrankClawError;
     use frankclaw_core::model::{
         CompletionRequest, CompletionResponse, FinishReason, InputModality, ModelApi,
         ModelCompat, ModelCost, ModelDef, ModelProvider,
@@ -2973,6 +3025,145 @@ mod tests {
 
         let _ = std::fs::remove_file(temp_dir.join("sessions.db"));
         let _ = std::fs::remove_file(temp_dir.join("pairings.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    struct FailingProvider;
+
+    #[async_trait]
+    impl ModelProvider for FailingProvider {
+        fn id(&self) -> &str {
+            "failing"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+            _stream_tx: Option<tokio::sync::mpsc::Sender<frankclaw_core::model::StreamDelta>>,
+        ) -> frankclaw_core::error::Result<CompletionResponse> {
+            Err(FrankClawError::ModelProvider {
+                msg: "simulated provider failure".into(),
+            })
+        }
+
+        async fn list_models(&self) -> frankclaw_core::error::Result<Vec<ModelDef>> {
+            Ok(vec![ModelDef {
+                id: "failing-model".into(),
+                name: "failing-model".into(),
+                api: ModelApi::Ollama,
+                reasoning: false,
+                input: vec![InputModality::Text],
+                cost: ModelCost::default(),
+                context_window: 4096,
+                max_output_tokens: 1024,
+                compat: ModelCompat::default(),
+            }])
+        }
+
+        async fn health(&self) -> bool {
+            true
+        }
+    }
+
+    async fn build_failing_state(
+        temp_dir: &PathBuf,
+        mut config: FrankClawConfig,
+        channels: Arc<ChannelSet>,
+    ) -> (Arc<GatewayState>, Arc<SqliteSessionStore>) {
+        std::fs::create_dir_all(temp_dir).expect("temp dir should exist");
+
+        let sessions = Arc::new(
+            SqliteSessionStore::open(&temp_dir.join("sessions.db"), None)
+                .expect("sessions should open"),
+        );
+        let pairing = Arc::new(
+            PairingStore::open(&temp_dir.join("pairings.json")).expect("pairings should open"),
+        );
+        let media = Arc::new(
+            MediaStore::new(temp_dir.join("media"), 1024 * 1024, 1)
+                .expect("media store should open"),
+        );
+        config.models.providers = vec![ProviderConfig {
+            id: "failing".into(),
+            api: "ollama".into(),
+            base_url: None,
+            api_key_ref: None,
+            models: vec!["failing-model".into()],
+            cooldown_secs: 1,
+        }];
+
+        let runtime = Arc::new(
+            Runtime::from_providers(
+                &config,
+                sessions.clone() as Arc<dyn SessionStore>,
+                vec![Arc::new(FailingProvider)],
+            )
+            .await
+            .expect("runtime should build"),
+        );
+        (
+            GatewayState::new(config, sessions.clone(), runtime, channels, pairing, media),
+            sessions,
+        )
+    }
+
+    #[tokio::test]
+    async fn process_inbound_sends_error_reply_on_model_failure() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "frankclaw-gateway-test-errreply-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut config = FrankClawConfig::default();
+        config.channels.insert(
+            frankclaw_core::types::ChannelId::new("web"),
+            ChannelConfig {
+                enabled: true,
+                accounts: Vec::new(),
+                extra: serde_json::json!({
+                    "dm_policy": "open"
+                }),
+            },
+        );
+        let capture = Arc::new(CaptureChannel::new("web", "Web"));
+        let mut map: HashMap<
+            frankclaw_core::types::ChannelId,
+            Arc<dyn frankclaw_core::channel::ChannelPlugin>,
+        > = HashMap::new();
+        map.insert(
+            frankclaw_core::types::ChannelId::new("web"),
+            capture.clone() as Arc<dyn frankclaw_core::channel::ChannelPlugin>,
+        );
+        let channels = Arc::new(ChannelSet::from_parts(map, None, None));
+        let (state, _sessions) = build_failing_state(&temp_dir, config, channels).await;
+
+        let inbound = InboundMessage {
+            channel: frankclaw_core::types::ChannelId::new("web"),
+            account_id: "default".into(),
+            sender_id: "user-1".into(),
+            sender_name: Some("User".into()),
+            thread_id: None,
+            is_group: false,
+            is_mention: false,
+            text: Some("hello".into()),
+            attachments: Vec::new(),
+            platform_message_id: Some("msg-1".into()),
+            timestamp: chrono::Utc::now(),
+        };
+
+        // Processing should fail (model provider errors)
+        let result = process_inbound_message(state.clone(), inbound).await;
+        assert!(result.is_err());
+
+        // But the user should have received an error reply via the channel
+        let sent = capture.drain().await;
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].text.contains("error"),
+            "error reply should mention an error: {}",
+            sent[0].text
+        );
+        assert_eq!(sent[0].to, "user-1");
+
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
