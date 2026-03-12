@@ -66,6 +66,7 @@ impl ModelProvider for AnthropicProvider {
             .post(&url)
             .header("x-api-key", self.api_key.expose_secret())
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -233,7 +234,13 @@ fn build_request_body(request: &CompletionRequest) -> serde_json::Value {
     });
 
     if let Some(system) = &request.system {
-        body["system"] = serde_json::json!(system);
+        // Format system prompt as a content block array with cache_control
+        // on the last block for Anthropic prompt caching.
+        body["system"] = serde_json::json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": { "type": "ephemeral" },
+        }]);
     }
     if let Some(temp) = request.temperature {
         body["temperature"] = serde_json::json!(temp);
@@ -839,5 +846,49 @@ mod tests {
         let msg = &body["messages"][0];
         // Should be plain text string, not content array
         assert_eq!(msg["content"], "hello");
+    }
+
+    #[test]
+    fn build_request_body_system_prompt_has_cache_control() {
+        let request = CompletionRequest {
+            model_id: "claude-sonnet-4-6".into(),
+            messages: vec![CompletionMessage::text(Role::User, "hello")],
+            max_tokens: Some(4096),
+            temperature: None,
+            system: Some("You are a helpful assistant.".into()),
+            tools: vec![],
+            thinking_budget: None,
+            parallel_tool_calls: None,
+            seed: None,
+            response_format: None,
+            reasoning_effort: None,
+        };
+        let body = build_request_body(&request);
+
+        // System should be a content block array, not a plain string
+        let system = body["system"].as_array().expect("system should be an array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "You are a helpful assistant.");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn build_request_body_no_system_no_cache_control() {
+        let request = CompletionRequest {
+            model_id: "claude-sonnet-4-6".into(),
+            messages: vec![CompletionMessage::text(Role::User, "hello")],
+            max_tokens: Some(4096),
+            temperature: None,
+            system: None,
+            tools: vec![],
+            thinking_budget: None,
+            parallel_tool_calls: None,
+            seed: None,
+            response_format: None,
+            reasoning_effort: None,
+        };
+        let body = build_request_body(&request);
+        assert!(body.get("system").is_none());
     }
 }
