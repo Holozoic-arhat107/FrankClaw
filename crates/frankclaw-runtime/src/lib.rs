@@ -18,7 +18,7 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::channel::{ChannelCapabilities, InboundAttachment, InboundMessage};
 use frankclaw_core::model::{
     CompletionMessage, CompletionRequest, ImageContent, ModelDef, ModelProvider, StreamDelta,
-    ToolCallResponse, ToolDef, Usage,
+    ToolCallResponse, ToolDef, ToolRiskLevel, Usage,
 };
 use frankclaw_core::session::{SessionEntry, SessionStore, TranscriptEntry};
 use frankclaw_core::types::{AgentId, ChannelId, Role, SessionKey};
@@ -63,6 +63,8 @@ pub struct ChatRequest {
     pub canvas: Option<Arc<dyn frankclaw_core::canvas::CanvasService>>,
     /// Cancellation token — when cancelled, the chat loop aborts at the next check point.
     pub cancel_token: Option<tokio_util::sync::CancellationToken>,
+    /// Channel for requesting interactive tool approval from the user.
+    pub approval_tx: Option<frankclaw_core::tool_approval::ApprovalRequestTx>,
 }
 
 #[derive(Debug, Clone)]
@@ -574,6 +576,62 @@ impl Runtime {
                     continue;
                 }
 
+                // Interactive tool approval: if approval_tx is set and the tool
+                // is mutating or destructive, request human approval before execution.
+                if let Some(ref approval_tx) = request.approval_tx {
+                    let risk = frankclaw_tools::tool_risk_level(&tool_call.name);
+                    if risk != ToolRiskLevel::ReadOnly {
+                        let approval_id = uuid::Uuid::new_v4().to_string();
+                        let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+                        let approval_req = frankclaw_core::tool_approval::ApprovalRequest {
+                            approval_id: approval_id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            tool_args: arguments.clone(),
+                            risk_level: format!("{:?}", risk),
+                            session_key: session_key.as_str().to_string(),
+                            agent_id: agent_id.as_str().to_string(),
+                        };
+                        if approval_tx.send((approval_req, decision_tx)).await.is_err() {
+                            return Err(FrankClawError::AgentRuntime {
+                                msg: "tool approval channel closed".into(),
+                            });
+                        }
+                        match decision_rx.await {
+                            Ok(frankclaw_core::tool_approval::ApprovalDecision::Deny) => {
+                                let deny_content = format!(
+                                    "{{\"error\": \"tool '{}' was denied by the user\"}}",
+                                    tool_call.name
+                                );
+                                self.append_transcript_entry(
+                                    &session_key,
+                                    next_seq,
+                                    Role::Tool,
+                                    deny_content.clone(),
+                                    Some(serde_json::json!({
+                                        "tool_name": tool_call.name,
+                                        "tool_call_id": tool_call.id,
+                                        "is_error": true,
+                                        "denied": true,
+                                    })),
+                                )
+                                .await?;
+                                request_messages.push(CompletionMessage::tool_result(
+                                    &tool_call.id,
+                                    deny_content,
+                                ));
+                                next_seq += 1;
+                                continue;
+                            }
+                            Ok(_) => { /* AllowOnce or AllowAlways — proceed */ }
+                            Err(_) => {
+                                return Err(FrankClawError::AgentRuntime {
+                                    msg: "tool approval response channel dropped".into(),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 let tool_result = self
                     .tools
                     .invoke_allowed(
@@ -857,6 +915,7 @@ impl Runtime {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })),
         )
         .await;
@@ -1706,6 +1765,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -1759,6 +1819,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -1822,6 +1883,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -1897,6 +1959,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -1970,6 +2033,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2075,6 +2139,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("should succeed with error result fed back to model");
@@ -2144,6 +2209,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect_err("too many tool calls should fail");
@@ -2262,6 +2328,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect_err("loop should be detected");
@@ -2366,6 +2433,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2452,6 +2520,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2527,6 +2596,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2588,6 +2658,7 @@ mod tests {
                 }),
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2647,6 +2718,7 @@ mod tests {
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: None,
+                approval_tx: None,
             })
             .await
             .expect("chat should succeed");
@@ -2743,6 +2815,7 @@ mod tests {
                     channel_capabilities: None,
                     canvas: None,
                     cancel_token: Some(cancel_clone),
+                    approval_tx: None,
                 })
                 .await
         });

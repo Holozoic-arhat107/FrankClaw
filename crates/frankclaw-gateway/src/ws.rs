@@ -225,6 +225,9 @@ async fn dispatch_method(
         Method::UsageGet => {
             crate::methods::usage_get(state, request).await
         }
+        Method::ToolApprovalResolve => {
+            crate::methods::tool_approval_resolve(state, request).await
+        }
         Method::SessionsPatch => {
             crate::methods::sessions_patch(state, request).await
         }

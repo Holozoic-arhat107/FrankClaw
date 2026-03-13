@@ -245,6 +245,7 @@ async fn handle_non_streaming(
             channel_capabilities: None,
             canvas: None,
             cancel_token: Some(cancel_token),
+            approval_tx: None,
         })
         .await;
 
@@ -309,6 +310,7 @@ async fn handle_streaming(
                 channel_capabilities: None,
                 canvas: None,
                 cancel_token: Some(cancel_token),
+                approval_tx: None,
             })
             .await;
     });

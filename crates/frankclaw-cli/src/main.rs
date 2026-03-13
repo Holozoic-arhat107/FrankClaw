@@ -645,6 +645,7 @@ async fn main() -> anyhow::Result<()> {
                     channel_capabilities: None,
                     canvas: None,
                     cancel_token: None,
+                    approval_tx: None,
                 })
                 .await?;
 

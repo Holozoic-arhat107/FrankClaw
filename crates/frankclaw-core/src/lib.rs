@@ -14,5 +14,6 @@ pub mod model;
 pub mod protocol;
 pub mod sanitize;
 pub mod session;
+pub mod tool_approval;
 pub mod tool_services;
 pub mod types;

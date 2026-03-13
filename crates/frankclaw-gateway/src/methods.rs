@@ -253,6 +253,31 @@ pub async fn chat_send(
         None
     };
 
+    // Set up interactive tool approval channel.
+    let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel::<(
+        frankclaw_core::tool_approval::ApprovalRequest,
+        tokio::sync::oneshot::Sender<frankclaw_core::tool_approval::ApprovalDecision>,
+    )>(4);
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            while let Some((req, decision_tx)) = approval_rx.recv().await {
+                // Store the decision sender so tool.approval.resolve can find it.
+                state_clone
+                    .pending_approvals
+                    .insert(req.approval_id.clone(), decision_tx);
+                // Broadcast the approval request to all clients.
+                let event = Frame::Event(EventFrame {
+                    event: EventType::ToolApprovalRequested,
+                    payload: serde_json::to_value(&req).unwrap_or_default(),
+                });
+                if let Ok(json) = serde_json::to_string(&event) {
+                    let _ = state_clone.broadcast.send(json);
+                }
+            }
+        });
+    }
+
     match state
         .runtime
         .chat(frankclaw_runtime::ChatRequest {
@@ -269,6 +294,7 @@ pub async fn chat_send(
             channel_capabilities: None,
             canvas: None,
             cancel_token: Some(cancel_token),
+            approval_tx: Some(approval_tx),
         })
         .await
     {
@@ -706,6 +732,62 @@ pub async fn usage_get(
             )
         }
         Err(err) => ResponseFrame::err(request.id, 500, err.to_string()),
+    }
+}
+
+/// Handle `tool.approval.resolve` method.
+pub async fn tool_approval_resolve(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let approval_id = match request.params.get("approval_id").and_then(|v| v.as_str()) {
+        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "approval_id is required"),
+    };
+
+    let decision_str = match request.params.get("decision").and_then(|v| v.as_str()) {
+        Some(d) => d,
+        None => return ResponseFrame::err(request.id, 400, "decision is required"),
+    };
+
+    let decision = match decision_str {
+        "allow_once" => frankclaw_core::tool_approval::ApprovalDecision::AllowOnce,
+        "allow_always" => frankclaw_core::tool_approval::ApprovalDecision::AllowAlways,
+        "deny" => frankclaw_core::tool_approval::ApprovalDecision::Deny,
+        _ => {
+            return ResponseFrame::err(
+                request.id,
+                400,
+                "decision must be 'allow_once', 'allow_always', or 'deny'",
+            )
+        }
+    };
+
+    if let Some((_, decision_tx)) = state.pending_approvals.remove(&approval_id) {
+        if decision_tx.send(decision).is_ok() {
+            // Broadcast resolution event.
+            let event = Frame::Event(EventFrame {
+                event: EventType::ToolApprovalResolved,
+                payload: serde_json::json!({
+                    "approval_id": approval_id,
+                    "decision": decision_str,
+                }),
+            });
+            if let Ok(json) = serde_json::to_string(&event) {
+                let _ = state.broadcast.send(json);
+            }
+            ResponseFrame::ok(
+                request.id,
+                serde_json::json!({
+                    "approval_id": approval_id,
+                    "decision": decision_str,
+                }),
+            )
+        } else {
+            ResponseFrame::err(request.id, 410, "approval request already expired")
+        }
+    } else {
+        ResponseFrame::err(request.id, 404, "no pending approval with that ID")
     }
 }
 

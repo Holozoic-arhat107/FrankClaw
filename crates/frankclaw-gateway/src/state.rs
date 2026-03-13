@@ -57,6 +57,12 @@ pub struct GatewayState {
 
     /// Active chat runs keyed by session key, used for chat.cancel.
     pub active_runs: DashMap<String, CancellationToken>,
+
+    /// Pending tool approval decisions keyed by approval_id.
+    pub pending_approvals: DashMap<
+        String,
+        tokio::sync::oneshot::Sender<frankclaw_core::tool_approval::ApprovalDecision>,
+    >,
 }
 
 /// Per-connection state.
@@ -95,6 +101,7 @@ impl GatewayState {
             canvas,
             shutdown: CancellationToken::new(),
             active_runs: DashMap::new(),
+            pending_approvals: DashMap::new(),
         })
     }
 

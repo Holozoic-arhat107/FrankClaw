@@ -102,6 +102,9 @@ pub enum Method {
     // Usage
     UsageGet,
 
+    // Tool approval
+    ToolApprovalResolve,
+
     // Health
     HealthProbe,
 }
@@ -131,7 +134,8 @@ impl Method {
             | Self::WebhooksRemove
             | Self::WebhooksTest
             | Self::NodesPairApprove
-            | Self::NodesPairReject => AuthRole::Editor,
+            | Self::NodesPairReject
+            | Self::ToolApprovalResolve => AuthRole::Editor,
 
             // Viewer (read-only)
             _ => AuthRole::Viewer,
@@ -155,6 +159,8 @@ pub enum EventType {
     CronRun,
     LogEntry,
     NodePairRequest,
+    ToolApprovalRequested,
+    ToolApprovalResolved,
 }
 
 /// Structured protocol error.
