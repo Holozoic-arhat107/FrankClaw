@@ -6,6 +6,7 @@ pub mod broadcast;
 pub mod canvas;
 pub mod delivery;
 pub mod methods;
+pub mod openai_api;
 pub mod pairing;
 pub mod rate_limit;
 pub mod server;

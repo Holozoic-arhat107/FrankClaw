@@ -101,6 +101,17 @@ fn build_router(
         .route("/api/pairing/pending", get(pairing_pending_handler))
         .route("/api/pairing/approve", post(pairing_approve_handler))
         .route("/hooks/{mapping_id}", post(webhook_handler))
+        // OpenAI-compatible API (uses Arc<GatewayState> directly).
+        .nest(
+            "/v1",
+            Router::new()
+                .route(
+                    "/chat/completions",
+                    post(crate::openai_api::chat_completions_handler),
+                )
+                .route("/models", get(crate::openai_api::models_handler))
+                .with_state(state.clone()),
+        )
         // State.
         .with_state(AppState {
             gateway: state,
