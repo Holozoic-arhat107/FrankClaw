@@ -1787,3 +1787,152 @@ pub async fn sessions_compact(
         Err(e) => ResponseFrame::err(request.id, 500, format!("compaction failed: {e}")),
     }
 }
+
+// ── Cron handlers ────────────────────────────────────────────────────────
+
+/// Handle `cron.list` method.
+pub async fn cron_list(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let Some(cron) = &state.cron else {
+        return ResponseFrame::err(request.id, 503, "cron service not available");
+    };
+    let jobs = cron.list().await;
+    let json: Vec<serde_json::Value> = jobs
+        .into_iter()
+        .map(|j| serde_json::to_value(j).unwrap_or_default())
+        .collect();
+    ResponseFrame::ok(request.id, serde_json::json!({ "jobs": json }))
+}
+
+/// Handle `cron.add` method.
+pub async fn cron_add(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let Some(cron) = &state.cron else {
+        return ResponseFrame::err(request.id, 503, "cron service not available");
+    };
+
+    let schedule = match request.params.get("schedule").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "schedule is required"),
+    };
+    let prompt = match request.params.get("prompt").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "prompt is required"),
+    };
+    let agent_id = request
+        .params
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    let session_key = request
+        .params
+        .get("session_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let id = request
+        .params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("job-{}", chrono::Utc::now().timestamp_millis()));
+
+    use frankclaw_core::tool_services::CronManager;
+    let sk = if session_key.is_empty() {
+        format!("{agent_id}:cron:{id}")
+    } else {
+        session_key.to_string()
+    };
+    match cron.add_job(&id, &schedule, agent_id, &sk, &prompt, true).await {
+        Ok(()) => ResponseFrame::ok(
+            request.id,
+            serde_json::json!({ "status": "ok", "id": id }),
+        ),
+        Err(e) => ResponseFrame::err(request.id, 400, format!("failed to add job: {e}")),
+    }
+}
+
+/// Handle `cron.remove` method.
+pub async fn cron_remove(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let Some(cron) = &state.cron else {
+        return ResponseFrame::err(request.id, 503, "cron service not available");
+    };
+    let id = match request.params.get("id").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim(),
+        _ => return ResponseFrame::err(request.id, 400, "id is required"),
+    };
+    use frankclaw_core::tool_services::CronManager;
+    match cron.remove_job(id).await {
+        Ok(existed) => ResponseFrame::ok(
+            request.id,
+            serde_json::json!({ "status": "ok", "existed": existed }),
+        ),
+        Err(e) => ResponseFrame::err(request.id, 500, format!("failed to remove job: {e}")),
+    }
+}
+
+/// Handle `cron.run` method — triggers immediate execution of a job.
+pub async fn cron_run(
+    state: &Arc<GatewayState>,
+    request: RequestFrame,
+) -> ResponseFrame {
+    let Some(cron) = &state.cron else {
+        return ResponseFrame::err(request.id, 503, "cron service not available");
+    };
+    let id = match request.params.get("id").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return ResponseFrame::err(request.id, 400, "id is required"),
+    };
+
+    let jobs = cron.list().await;
+    let job = match jobs.into_iter().find(|j| j.id == id) {
+        Some(j) => j,
+        None => return ResponseFrame::err(request.id, 404, "job not found"),
+    };
+
+    // Spawn the job asynchronously so we don't block the RPC.
+    let state2 = state.clone();
+    tokio::spawn(async move {
+        let result = state2
+            .runtime
+            .chat(frankclaw_runtime::ChatRequest {
+                agent_id: Some(job.agent_id.clone()),
+                session_key: Some(job.session_key.clone()),
+                message: job.prompt.clone(),
+                attachments: Vec::new(),
+                model_id: None,
+                max_tokens: None,
+                temperature: None,
+                stream_tx: None,
+                thinking_budget: None,
+                channel_id: None,
+                channel_capabilities: None,
+                canvas: None,
+                cancel_token: None,
+                approval_tx: None,
+            })
+            .await;
+        let status = if result.is_ok() { "success" } else { "failed" };
+        let event = Frame::Event(EventFrame {
+            event: EventType::CronRun,
+            payload: serde_json::json!({
+                "job_id": job.id,
+                "status": status,
+            }),
+        });
+        if let Ok(json) = serde_json::to_string(&event) {
+            let _ = state2.broadcast.send(json);
+        }
+    });
+
+    ResponseFrame::ok(
+        request.id,
+        serde_json::json!({ "status": "triggered", "id": id }),
+    )
+}

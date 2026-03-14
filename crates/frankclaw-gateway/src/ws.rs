@@ -234,6 +234,18 @@ async fn dispatch_method(
         Method::SessionsCompact => {
             crate::methods::sessions_compact(state, request).await
         }
+        Method::CronList => {
+            crate::methods::cron_list(state, request).await
+        }
+        Method::CronAdd => {
+            crate::methods::cron_add(state, request).await
+        }
+        Method::CronRemove => {
+            crate::methods::cron_remove(state, request).await
+        }
+        Method::CronRun => {
+            crate::methods::cron_run(state, request).await
+        }
         _ => ResponseFrame::err(
             request.id,
             501,

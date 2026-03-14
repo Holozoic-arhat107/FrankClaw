@@ -9,6 +9,7 @@ use frankclaw_core::channel::ChannelPlugin;
 use frankclaw_core::config::FrankClawConfig;
 use frankclaw_core::types::ChannelId;
 use frankclaw_core::types::ConnId;
+use frankclaw_cron::CronService;
 use frankclaw_runtime::Runtime;
 use frankclaw_media::MediaStore;
 use frankclaw_sessions::SqliteSessionStore;
@@ -45,6 +46,9 @@ pub struct GatewayState {
 
     /// Local media store for authenticated upload/download flows.
     pub media: Arc<MediaStore>,
+
+    /// Cron job scheduler service.
+    pub cron: Option<Arc<CronService>>,
 
     /// Monotonic connection counter.
     pub next_conn_id: std::sync::atomic::AtomicU64,
@@ -86,6 +90,18 @@ impl GatewayState {
         pairing: Arc<PairingStore>,
         media: Arc<MediaStore>,
     ) -> Arc<Self> {
+        Self::with_cron(config, sessions, runtime, channels, pairing, media, None)
+    }
+
+    pub fn with_cron(
+        config: FrankClawConfig,
+        sessions: Arc<SqliteSessionStore>,
+        runtime: Arc<Runtime>,
+        channels: Arc<ChannelSet>,
+        pairing: Arc<PairingStore>,
+        media: Arc<MediaStore>,
+        cron: Option<Arc<CronService>>,
+    ) -> Arc<Self> {
         let broadcast = BroadcastHandle::new(256);
         let canvas = CanvasStore::with_broadcast(broadcast.sender());
         Arc::new(Self {
@@ -96,6 +112,7 @@ impl GatewayState {
             channels,
             pairing,
             media,
+            cron,
             next_conn_id: std::sync::atomic::AtomicU64::new(1),
             broadcast,
             canvas,

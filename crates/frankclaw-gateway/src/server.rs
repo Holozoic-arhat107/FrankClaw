@@ -55,7 +55,9 @@ pub async fn run(
     let rate_limiter = Arc::new(AuthRateLimiter::new(config.gateway.rate_limit.clone()));
     let bind_addr = resolve_bind_addr(&config.gateway.bind, config.gateway.port);
     let channels = Arc::new(frankclaw_channels::load_from_config(&config)?);
-    let state = GatewayState::new(config, sessions, runtime, channels, pairing, media);
+    let state = GatewayState::with_cron(
+        config, sessions, runtime, channels, pairing, media, Some(cron.clone()),
+    );
     log_loaded_skills(&state);
     start_config_watcher(state.clone(), config_path);
     start_channel_runtime(state.clone());
