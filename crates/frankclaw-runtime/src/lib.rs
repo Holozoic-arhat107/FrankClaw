@@ -43,6 +43,7 @@ pub struct Runtime {
     cron: Option<Arc<dyn frankclaw_core::tool_services::CronManager>>,
     memory_search: Option<Arc<dyn frankclaw_core::tool_services::MemorySearch>>,
     audio_transcriber: Option<Arc<dyn frankclaw_core::tool_services::AudioTranscriber>>,
+    understanding_providers: Vec<Box<dyn frankclaw_media::understanding::UnderstandingProvider>>,
     workspace: Option<std::path::PathBuf>,
     hooks: Option<Arc<frankclaw_core::hooks::HookRegistry>>,
 }
@@ -175,6 +176,7 @@ impl Runtime {
             cron: None,
             memory_search: None,
             audio_transcriber: None,
+            understanding_providers: Vec::new(),
             workspace: None,
             hooks: None,
         })
@@ -190,6 +192,10 @@ impl Runtime {
 
     pub fn set_cron(&mut self, cron: Arc<dyn frankclaw_core::tool_services::CronManager>) {
         self.cron = Some(cron);
+    }
+
+    pub fn set_understanding_providers(&mut self, providers: Vec<Box<dyn frankclaw_media::understanding::UnderstandingProvider>>) {
+        self.understanding_providers = providers;
     }
 
     pub fn set_memory_search(&mut self, memory_search: Arc<dyn frankclaw_core::tool_services::MemorySearch>) {
@@ -342,24 +348,66 @@ impl Runtime {
         let user_message = if !image_contents.is_empty() {
             CompletionMessage::with_images(sanitized_message.clone(), image_contents)
         } else if !request.attachments.is_empty() && !model_def.compat.supports_vision {
-            // Model doesn't support vision — add text description of attachments.
-            let attachment_notes: Vec<String> = request
-                .attachments
-                .iter()
-                .filter(|a| a.mime_type.starts_with("image/"))
-                .map(|a| {
-                    let name = a.filename.as_deref().unwrap_or("image");
-                    format!("[Image attached: {}]", name)
-                })
-                .collect();
-            if attachment_notes.is_empty() {
-                CompletionMessage::text(Role::User, sanitized_message.clone())
+            // Model doesn't support vision — try understanding pipeline for text descriptions.
+            let understanding_context = if !self.understanding_providers.is_empty() {
+                let media_attachments: Vec<_> = request
+                    .attachments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| {
+                        a.mime_type.starts_with("image/") || a.mime_type.starts_with("audio/")
+                    })
+                    .filter_map(|(i, a)| {
+                        a.url.as_ref().map(|_url| {
+                            frankclaw_media::understanding::MediaAttachment {
+                                data: Vec::new(), // URL-based attachments need fetching
+                                mime: a.mime_type.clone(),
+                                filename: a.filename.clone(),
+                                index: i,
+                            }
+                        })
+                    })
+                    .collect();
+                if media_attachments.is_empty() {
+                    String::new()
+                } else {
+                    let outputs = frankclaw_media::understanding::process_attachments(
+                        &media_attachments,
+                        &self.understanding_providers,
+                    )
+                    .await;
+                    frankclaw_media::understanding::format_as_context(&outputs)
+                }
             } else {
-                let prefix = attachment_notes.join("\n");
+                String::new()
+            };
+
+            if !understanding_context.is_empty() {
+                // Understanding pipeline produced descriptions — prepend to message.
                 CompletionMessage::text(
                     Role::User,
-                    format!("{}\n\n{}", prefix, sanitized_message),
+                    format!("{}\n\n{}", understanding_context, sanitized_message),
                 )
+            } else {
+                // Fallback: simple text labels for attachments.
+                let attachment_notes: Vec<String> = request
+                    .attachments
+                    .iter()
+                    .filter(|a| a.mime_type.starts_with("image/"))
+                    .map(|a| {
+                        let name = a.filename.as_deref().unwrap_or("image");
+                        format!("[Image attached: {}]", name)
+                    })
+                    .collect();
+                if attachment_notes.is_empty() {
+                    CompletionMessage::text(Role::User, sanitized_message.clone())
+                } else {
+                    let prefix = attachment_notes.join("\n");
+                    CompletionMessage::text(
+                        Role::User,
+                        format!("{}\n\n{}", prefix, sanitized_message),
+                    )
+                }
             }
         } else {
             CompletionMessage::text(Role::User, sanitized_message.clone())
