@@ -1184,11 +1184,16 @@ dependencies = [
  "async-trait",
  "chrono",
  "frankclaw-core",
+ "reqwest",
+ "rusqlite",
+ "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -42,6 +42,7 @@ pub struct Runtime {
     channels: Option<Arc<dyn frankclaw_core::tool_services::MessageSender>>,
     cron: Option<Arc<dyn frankclaw_core::tool_services::CronManager>>,
     workspace: Option<std::path::PathBuf>,
+    hooks: Option<Arc<frankclaw_core::hooks::HookRegistry>>,
 }
 
 pub struct ChatRequest {
@@ -171,6 +172,7 @@ impl Runtime {
             channels: None,
             cron: None,
             workspace: None,
+            hooks: None,
         })
     }
 
@@ -188,6 +190,20 @@ impl Runtime {
 
     pub fn set_workspace(&mut self, workspace: std::path::PathBuf) {
         self.workspace = Some(workspace);
+    }
+
+    pub fn set_hooks(&mut self, hooks: Arc<frankclaw_core::hooks::HookRegistry>) {
+        self.hooks = Some(hooks);
+    }
+
+    /// Fire a hook event asynchronously (fire-and-forget).
+    fn fire_hook(&self, event: frankclaw_core::hooks::HookEvent) {
+        if let Some(ref hooks) = self.hooks {
+            let hooks = hooks.clone();
+            tokio::spawn(async move {
+                hooks.fire(event).await;
+            });
+        }
     }
 
     pub fn list_models(&self) -> &[ModelDef] {
@@ -263,6 +279,13 @@ impl Runtime {
         let (agent_id, agent) = self.resolve_agent(request.agent_id.as_ref())?;
         let model_id = self.resolve_model_id(&agent, request.model_id.as_deref())?;
         let session_key = self.resolve_session_key(&agent_id, request.session_key)?;
+
+        // Fire message.received hook.
+        self.fire_hook(frankclaw_core::hooks::HookEvent::message_received(
+            "runtime",
+            agent_id.as_str(),
+            &sanitized_message,
+        ));
         let history = self.sessions.get_transcript(&session_key, 200, None).await?;
         let mut next_seq = history.last().map(|entry| entry.seq + 1).unwrap_or(1);
         let mut allowed_tools = self.tools.definitions(&agent.tools)?;
@@ -454,6 +477,12 @@ impl Runtime {
                 self.update_session_usage(&session_key, &total_usage, &model_id)
                     .await;
 
+                // Fire message.sent hook.
+                self.fire_hook(frankclaw_core::hooks::HookEvent::message_sent(
+                    "runtime",
+                    agent_id.as_str(),
+                ));
+
                 return Ok(ChatResponse {
                     session_key,
                     model_id,
@@ -640,6 +669,13 @@ impl Runtime {
                     }
                 }
 
+                // Fire tool.before hook.
+                self.fire_hook(frankclaw_core::hooks::HookEvent::tool_before(
+                    &tool_call.name,
+                    agent_id.as_str(),
+                    session_key.as_str(),
+                ));
+
                 let tool_result = self
                     .tools
                     .invoke_allowed(
@@ -660,8 +696,24 @@ impl Runtime {
                     )
                     .await;
                 let tool_output = match tool_result {
-                    Ok(output) => output,
+                    Ok(output) => {
+                        // Fire tool.after hook (success).
+                        self.fire_hook(frankclaw_core::hooks::HookEvent::tool_after(
+                            &tool_call.name,
+                            agent_id.as_str(),
+                            session_key.as_str(),
+                            true,
+                        ));
+                        output
+                    }
                     Err(err) => {
+                        // Fire tool.after hook (failure).
+                        self.fire_hook(frankclaw_core::hooks::HookEvent::tool_after(
+                            &tool_call.name,
+                            agent_id.as_str(),
+                            session_key.as_str(),
+                            false,
+                        ));
                         // Return synthetic error result so the model can recover.
                         let error_content = format!(
                             "{{\"error\": \"tool '{}' failed: {}\"}}",

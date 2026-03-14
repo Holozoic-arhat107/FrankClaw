@@ -22,6 +22,7 @@ pub enum EventType {
     Agent,
     Gateway,
     Message,
+    Tool,
 }
 
 impl std::fmt::Display for EventType {
@@ -32,6 +33,7 @@ impl std::fmt::Display for EventType {
             Self::Agent => write!(f, "agent"),
             Self::Gateway => write!(f, "gateway"),
             Self::Message => write!(f, "message"),
+            Self::Tool => write!(f, "tool"),
         }
     }
 }
@@ -260,6 +262,21 @@ impl HookEvent {
         Self::new(EventType::Gateway, "stopped")
     }
 
+    pub fn tool_before(tool_name: &str, agent_id: &str, session_key: &str) -> Self {
+        Self::new(EventType::Tool, "before")
+            .with("tool_name", tool_name)
+            .with("agent_id", agent_id)
+            .with("session_key", session_key)
+    }
+
+    pub fn tool_after(tool_name: &str, agent_id: &str, session_key: &str, success: bool) -> Self {
+        Self::new(EventType::Tool, "after")
+            .with("tool_name", tool_name)
+            .with("agent_id", agent_id)
+            .with("session_key", session_key)
+            .with("success", success)
+    }
+
     pub fn agent_turn_started(agent_id: &str, session_key: &str) -> Self {
         Self::new(EventType::Agent, "turn_started")
             .with("agent_id", agent_id)
@@ -420,6 +437,47 @@ mod tests {
             .with("count", 42);
         assert_eq!(e.context["channel"], "telegram");
         assert_eq!(e.context["count"], 42);
+    }
+
+    #[test]
+    fn tool_before_event_context() {
+        let e = HookEvent::tool_before("bash", "default", "sess-1");
+        assert_eq!(e.event_type, EventType::Tool);
+        assert_eq!(e.action, "before");
+        assert_eq!(e.context["tool_name"], "bash");
+        assert_eq!(e.context["agent_id"], "default");
+        assert_eq!(e.context["session_key"], "sess-1");
+        assert_eq!(e.specific_key(), "tool:before");
+    }
+
+    #[test]
+    fn tool_after_event_context() {
+        let e = HookEvent::tool_after("bash", "default", "sess-1", true);
+        assert_eq!(e.event_type, EventType::Tool);
+        assert_eq!(e.action, "after");
+        assert_eq!(e.context["tool_name"], "bash");
+        assert_eq!(e.context["success"], true);
+    }
+
+    #[tokio::test]
+    async fn tool_event_fires_handler() {
+        let registry = HookRegistry::new();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let c = counter.clone();
+        registry
+            .on_action(EventType::Tool, "before", "test", move |_| {
+                let c = c.clone();
+                async move { c.fetch_add(1, Ordering::Relaxed); }
+            })
+            .await;
+
+        registry
+            .fire(HookEvent::tool_before("bash", "agent1", "s1"))
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
