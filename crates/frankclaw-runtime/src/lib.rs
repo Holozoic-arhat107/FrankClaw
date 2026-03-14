@@ -41,6 +41,8 @@ pub struct Runtime {
     fetcher: Option<Arc<dyn frankclaw_core::tool_services::Fetcher>>,
     channels: Option<Arc<dyn frankclaw_core::tool_services::MessageSender>>,
     cron: Option<Arc<dyn frankclaw_core::tool_services::CronManager>>,
+    memory_search: Option<Arc<dyn frankclaw_core::tool_services::MemorySearch>>,
+    audio_transcriber: Option<Arc<dyn frankclaw_core::tool_services::AudioTranscriber>>,
     workspace: Option<std::path::PathBuf>,
     hooks: Option<Arc<frankclaw_core::hooks::HookRegistry>>,
 }
@@ -171,6 +173,8 @@ impl Runtime {
             fetcher: None,
             channels: None,
             cron: None,
+            memory_search: None,
+            audio_transcriber: None,
             workspace: None,
             hooks: None,
         })
@@ -186,6 +190,14 @@ impl Runtime {
 
     pub fn set_cron(&mut self, cron: Arc<dyn frankclaw_core::tool_services::CronManager>) {
         self.cron = Some(cron);
+    }
+
+    pub fn set_memory_search(&mut self, memory_search: Arc<dyn frankclaw_core::tool_services::MemorySearch>) {
+        self.memory_search = Some(memory_search);
+    }
+
+    pub fn set_audio_transcriber(&mut self, audio_transcriber: Arc<dyn frankclaw_core::tool_services::AudioTranscriber>) {
+        self.audio_transcriber = Some(audio_transcriber);
     }
 
     pub fn set_workspace(&mut self, workspace: std::path::PathBuf) {
@@ -690,6 +702,8 @@ impl Runtime {
                             fetcher: self.fetcher.clone(),
                             channels: self.channels.clone(),
                             cron: self.cron.clone(),
+                            memory_search: self.memory_search.clone(),
+                            audio_transcriber: self.audio_transcriber.clone(),
                             config: self.config_arc.clone(),
                             workspace: self.workspace.clone(),
                         },
@@ -873,6 +887,8 @@ impl Runtime {
                     fetcher: self.fetcher.clone(),
                     channels: self.channels.clone(),
                     cron: self.cron.clone(),
+                    memory_search: self.memory_search.clone(),
+                    audio_transcriber: self.audio_transcriber.clone(),
                     config: self.config_arc.clone(),
                     workspace: self.workspace.clone(),
                 },

@@ -47,6 +47,38 @@ pub trait MessageSender: Send + Sync + 'static {
     ) -> Result<()>;
 }
 
+/// Semantic memory search service.
+#[async_trait]
+pub trait MemorySearch: Send + Sync + 'static {
+    /// Search memory using a text query.
+    /// Returns matching chunks with relevance scores.
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemorySearchResult>>;
+
+    /// List all indexed memory sources.
+    async fn list_sources(&self) -> Result<Vec<serde_json::Value>>;
+}
+
+/// A memory search result.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemorySearchResult {
+    pub source: String,
+    pub text: String,
+    pub score: f32,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+/// Audio transcription service.
+#[async_trait]
+pub trait AudioTranscriber: Send + Sync + 'static {
+    /// Transcribe audio data to text.
+    async fn transcribe(&self, data: &[u8], mime: &str, filename: &str) -> Result<String>;
+}
+
 /// Manage scheduled cron jobs.
 #[async_trait]
 pub trait CronManager: Send + Sync + 'static {

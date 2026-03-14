@@ -33,7 +33,7 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::media::is_safe_ip;
 use frankclaw_core::model::{ImageContent, ToolDef, ToolRiskLevel};
 use frankclaw_core::session::SessionStore;
-use frankclaw_core::tool_services::{CronManager, Fetcher, MessageSender};
+use frankclaw_core::tool_services::{AudioTranscriber, CronManager, Fetcher, MemorySearch, MessageSender};
 use frankclaw_core::types::{AgentId, SessionKey};
 
 /// Maximum time to wait for a single CDP command response.
@@ -51,6 +51,8 @@ pub struct ToolContext {
     pub fetcher: Option<Arc<dyn Fetcher>>,
     pub channels: Option<Arc<dyn MessageSender>>,
     pub cron: Option<Arc<dyn CronManager>>,
+    pub memory_search: Option<Arc<dyn MemorySearch>>,
+    pub audio_transcriber: Option<Arc<dyn AudioTranscriber>>,
     pub config: Option<Arc<FrankClawConfig>>,
     pub workspace: Option<std::path::PathBuf>,
 }
@@ -164,6 +166,7 @@ impl ToolRegistry {
         registry.register(Arc::new(config_tools::AgentsListTool));
         // Memory tools
         registry.register(Arc::new(memory::MemoryGetTool));
+        registry.register(Arc::new(memory::MemorySearchTool));
         // PDF tools
         registry.register(Arc::new(pdf::PdfReadTool));
         // Image tools
@@ -292,6 +295,8 @@ pub(crate) fn test_tool_context(workspace: Option<std::path::PathBuf>) -> ToolCo
         fetcher: None,
         channels: None,
         cron: None,
+        memory_search: None,
+        audio_transcriber: None,
         config: None,
         workspace,
     }
@@ -1809,6 +1814,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -1837,6 +1844,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -1888,6 +1897,8 @@ mod tests {
             fetcher: None,
             channels: None,
             cron: None,
+            memory_search: None,
+            audio_transcriber: None,
             config: None,
             workspace: None,
         };
@@ -2015,6 +2026,8 @@ mod tests {
             fetcher: None,
             channels: None,
             cron: None,
+            memory_search: None,
+            audio_transcriber: None,
             config: None,
             workspace: None,
         };
@@ -2079,6 +2092,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2100,6 +2115,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2126,6 +2143,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2147,6 +2166,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2173,6 +2194,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2198,6 +2221,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2219,6 +2244,8 @@ mod tests {
                     fetcher: None,
                     channels: None,
                     cron: None,
+                    memory_search: None,
+                    audio_transcriber: None,
                     config: None,
                     workspace: None,
                 },
@@ -2295,6 +2322,8 @@ mod tests {
             fetcher: None,
             channels: None,
             cron: None,
+            memory_search: None,
+            audio_transcriber: None,
             config: None,
             workspace: None,
         };

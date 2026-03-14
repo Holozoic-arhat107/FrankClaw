@@ -161,6 +161,70 @@ fn validate_memory_path(memory_dir: &Path, requested: &str) -> Result<()> {
     Ok(())
 }
 
+// --------------------------------------------------------------------------
+// memory.search
+// --------------------------------------------------------------------------
+
+pub struct MemorySearchTool;
+
+#[async_trait]
+impl Tool for MemorySearchTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "memory.search".into(),
+            description: "Search the agent's memory using semantic/keyword hybrid search. \
+                Returns the most relevant memory chunks ranked by relevance score."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query text."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum number of results. Default: 5."
+                    }
+                }
+            }),
+            risk_level: ToolRiskLevel::ReadOnly,
+        }
+    }
+
+    async fn invoke(&self, args: serde_json::Value, ctx: ToolContext) -> Result<serde_json::Value> {
+        let memory = ctx.memory_search.as_ref().ok_or_else(|| FrankClawError::AgentRuntime {
+            msg: "memory.search is not available: no memory service configured".into(),
+        })?;
+
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| FrankClawError::InvalidRequest {
+                msg: "memory.search requires a non-empty 'query' string".into(),
+            })?;
+
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .clamp(1, 20) as usize;
+
+        let results = memory.search(query, limit).await?;
+
+        Ok(serde_json::json!({
+            "query": query,
+            "count": results.len(),
+            "results": results,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +253,14 @@ mod tests {
         let tool = MemoryGetTool;
         let def = tool.definition();
         assert_eq!(def.name, "memory.get");
+        assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
+    }
+
+    #[test]
+    fn memory_search_definition_is_valid() {
+        let tool = MemorySearchTool;
+        let def = tool.definition();
+        assert_eq!(def.name, "memory.search");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }

@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use base64::Engine;
 
 use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::model::{ToolDef, ToolRiskLevel};
@@ -80,6 +79,12 @@ impl Tool for AudioTranscribeTool {
             msg: "audio.transcribe is not available: no workspace directory configured".into(),
         })?;
 
+        let transcriber = ctx.audio_transcriber.as_ref().ok_or_else(|| FrankClawError::AgentRuntime {
+            msg: "audio.transcribe is not available: no transcription service configured. \
+                  Enable it in the 'understanding' config section."
+                .into(),
+        })?;
+
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -90,7 +95,7 @@ impl Tool for AudioTranscribeTool {
             })?;
 
         let resolved = validate_workspace_path(workspace, path_str)?;
-        let _mime = audio_mime_from_extension(&resolved)?;
+        let mime = audio_mime_from_extension(&resolved)?;
 
         let metadata = tokio::fs::metadata(&resolved).await.map_err(|e| {
             FrankClawError::AgentRuntime {
@@ -108,26 +113,23 @@ impl Tool for AudioTranscribeTool {
             });
         }
 
-        // Read the file — actual transcription requires the understanding pipeline
-        // to be wired in. For now, return the file info so it can be processed
-        // by the runtime's understanding chain.
         let bytes = tokio::fs::read(&resolved).await.map_err(|e| {
             FrankClawError::AgentRuntime {
                 msg: format!("failed to read audio '{}': {e}", path_str),
             }
         })?;
 
-        // Signal that this tool output needs audio transcription processing.
-        // The runtime will pick this up and route through the understanding chain.
+        let filename = resolved
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("audio");
+
+        let transcription = transcriber.transcribe(&bytes, mime, filename).await?;
+
         Ok(serde_json::json!({
             "path": path_str,
             "size_bytes": bytes.len(),
-            "status": "audio_file_loaded",
-            "_audio_transcription_request": {
-                "data_base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
-                "mime": _mime,
-                "filename": resolved.file_name().and_then(|f| f.to_str()).unwrap_or("audio"),
-            }
+            "transcription": transcription,
         }))
     }
 }

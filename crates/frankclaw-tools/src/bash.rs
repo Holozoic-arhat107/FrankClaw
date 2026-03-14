@@ -600,6 +600,8 @@ mod tests {
             fetcher: None,
             channels: None,
             cron: None,
+            memory_search: None,
+            audio_transcriber: None,
             config: None,
             workspace: None,
         }
