@@ -58,6 +58,13 @@
       "dm_policy": "pairing"
     }
   },
+  "memory": {
+    "enabled": false,
+    "embedding_provider": "openai",
+    "embedding_api_key_ref": "OPENAI_API_KEY",
+    "chunk_size": 1500,
+    "cache_embeddings": true
+  },
   "models": {
     "providers": [
       {
