@@ -16,7 +16,7 @@ pub struct MessageSendTool;
 impl Tool for MessageSendTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "message.send".into(),
+            name: "message_send".into(),
             description: "Send a text message via a configured channel \
                 (Telegram, Discord, Slack, etc.)."
                 .into(),
@@ -124,7 +124,7 @@ pub struct MessageReactTool;
 impl Tool for MessageReactTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "message.react".into(),
+            name: "message_react".into(),
             description: "Send an emoji reaction to a message on a channel."
                 .into(),
             parameters: serde_json::json!({
@@ -240,7 +240,7 @@ mod tests {
     fn message_send_definition_is_valid() {
         let tool = MessageSendTool;
         let def = tool.definition();
-        assert_eq!(def.name, "message.send");
+        assert_eq!(def.name, "message_send");
         assert_eq!(def.risk_level, ToolRiskLevel::Mutating);
     }
 
@@ -248,7 +248,7 @@ mod tests {
     fn message_react_definition_is_valid() {
         let tool = MessageReactTool;
         let def = tool.definition();
-        assert_eq!(def.name, "message.react");
+        assert_eq!(def.name, "message_react");
         assert_eq!(def.risk_level, ToolRiskLevel::Mutating);
     }
 }

@@ -26,7 +26,7 @@ pub struct CronListTool;
 impl Tool for CronListTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "cron.list".into(),
+            name: "cron_list".into(),
             description: "List all scheduled cron jobs with their schedule, status, and last run info."
                 .into(),
             parameters: serde_json::json!({
@@ -57,7 +57,7 @@ pub struct CronAddTool;
 impl Tool for CronAddTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "cron.add".into(),
+            name: "cron_add".into(),
             description: "Add a new scheduled cron job. The job will run the given prompt \
                 on the specified schedule (cron expression)."
                 .into(),
@@ -154,7 +154,7 @@ pub struct CronRemoveTool;
 impl Tool for CronRemoveTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "cron.remove".into(),
+            name: "cron_remove".into(),
             description: "Remove a scheduled cron job by ID.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -199,7 +199,7 @@ mod tests {
     fn cron_list_definition_is_valid() {
         let tool = CronListTool;
         let def = tool.definition();
-        assert_eq!(def.name, "cron.list");
+        assert_eq!(def.name, "cron_list");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 
@@ -207,7 +207,7 @@ mod tests {
     fn cron_add_definition_is_valid() {
         let tool = CronAddTool;
         let def = tool.definition();
-        assert_eq!(def.name, "cron.add");
+        assert_eq!(def.name, "cron_add");
         assert_eq!(def.risk_level, ToolRiskLevel::Mutating);
     }
 
@@ -215,7 +215,7 @@ mod tests {
     fn cron_remove_definition_is_valid() {
         let tool = CronRemoveTool;
         let def = tool.definition();
-        assert_eq!(def.name, "cron.remove");
+        assert_eq!(def.name, "cron_remove");
         assert_eq!(def.risk_level, ToolRiskLevel::Destructive);
     }
 }

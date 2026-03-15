@@ -25,7 +25,7 @@ pub struct MemoryGetTool;
 impl Tool for MemoryGetTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "memory.get".into(),
+            name: "memory_get".into(),
             description: "Read a file from the agent's memory directory. \
                 Use this to retrieve stored notes, context, or reference data."
                 .into(),
@@ -171,7 +171,7 @@ pub struct MemorySearchTool;
 impl Tool for MemorySearchTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "memory.search".into(),
+            name: "memory_search".into(),
             description: "Search the agent's memory using semantic/keyword hybrid search. \
                 Returns the most relevant memory chunks ranked by relevance score."
                 .into(),
@@ -252,7 +252,7 @@ mod tests {
     fn memory_get_definition_is_valid() {
         let tool = MemoryGetTool;
         let def = tool.definition();
-        assert_eq!(def.name, "memory.get");
+        assert_eq!(def.name, "memory_get");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 
@@ -260,7 +260,7 @@ mod tests {
     fn memory_search_definition_is_valid() {
         let tool = MemorySearchTool;
         let def = tool.definition();
-        assert_eq!(def.name, "memory.search");
+        assert_eq!(def.name, "memory_search");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }

@@ -348,11 +348,11 @@ fn truthy_env(name: &str) -> bool {
 /// Returns the risk level assigned to a tool by name.
 pub fn tool_risk_level(tool_name: &str) -> ToolRiskLevel {
     match tool_name {
-        "browser.click" | "browser.type" | "browser.press" | "browser.select_option" | "bash"
-        | "file.write" | "file.edit" | "message.send" | "message.react" | "cron.add" => {
+        "browser_click" | "browser_type" | "browser_press" | "browser_select_option" | "bash"
+        | "file_write" | "file_edit" | "message_send" | "message_react" | "cron_add" => {
             ToolRiskLevel::Mutating
         }
-        "cron.remove" => ToolRiskLevel::Destructive,
+        "cron_remove" => ToolRiskLevel::Destructive,
         _ => ToolRiskLevel::ReadOnly,
     }
 }
@@ -1107,7 +1107,7 @@ impl BrowserAriaSnapshotTool {
 impl Tool for SessionInspectTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "session.inspect".into(),
+            name: "session_inspect".into(),
             description: "Inspect one session entry and recent transcript messages.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1184,7 +1184,7 @@ fn canvas_id_from_args(args: &serde_json::Value, ctx: &ToolContext) -> String {
 impl Tool for CanvasGetTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "canvas.get".into(),
+            name: "canvas_get".into(),
             description: "Read the current canvas document. Returns the title, body, and structured blocks.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1213,7 +1213,7 @@ impl Tool for CanvasGetTool {
 impl Tool for CanvasSetTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "canvas.set".into(),
+            name: "canvas_set".into(),
             description: "Create or fully replace a canvas document visible in the user's Canvas tab. Use this to write structured content like reports, notes, code, checklists, or drawings (as SVG/HTML in the body). Supports markdown in the body field and typed blocks.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1268,7 +1268,7 @@ impl Tool for CanvasSetTool {
 impl Tool for CanvasAppendTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "canvas.append".into(),
+            name: "canvas_append".into(),
             description: "Append blocks to an existing canvas or update its title/body without replacing the whole document.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1318,7 +1318,7 @@ impl Tool for CanvasAppendTool {
 impl Tool for CanvasClearTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "canvas.clear".into(),
+            name: "canvas_clear".into(),
             description: "Delete a canvas document, removing all its content.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1342,7 +1342,7 @@ impl Tool for CanvasClearTool {
 impl Tool for BrowserOpenTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.open".into(),
+            name: "browser_open".into(),
             description: "Create or reuse a Chromium-backed browser session and navigate it to a URL over the DevTools protocol.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1377,7 +1377,7 @@ impl Tool for BrowserOpenTool {
 impl Tool for BrowserExtractTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.extract".into(),
+            name: "browser_extract".into(),
             description: "Extract visible text from an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1408,7 +1408,7 @@ impl Tool for BrowserExtractTool {
 impl Tool for BrowserSnapshotTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.snapshot".into(),
+            name: "browser_snapshot".into(),
             description: "Return stored HTML plus visible text from an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1439,7 +1439,7 @@ impl Tool for BrowserSnapshotTool {
 impl Tool for BrowserClickTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.click".into(),
+            name: "browser_click".into(),
             description: "Click a DOM element by CSS selector in an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1474,7 +1474,7 @@ impl Tool for BrowserClickTool {
 impl Tool for BrowserTypeTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.type".into(),
+            name: "browser_type".into(),
             description: "Set an input or textarea value by CSS selector in an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1516,7 +1516,7 @@ impl Tool for BrowserTypeTool {
 impl Tool for BrowserWaitTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.wait".into(),
+            name: "browser_wait".into(),
             description: "Wait for a CSS selector or visible text to appear in an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1561,7 +1561,7 @@ impl Tool for BrowserWaitTool {
 impl Tool for BrowserPressTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.press".into(),
+            name: "browser_press".into(),
             description: "Send one allowed keyboard key to a focused DOM element by CSS selector in an existing Chromium-backed browser session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1605,7 +1605,7 @@ impl Tool for BrowserPressTool {
 impl Tool for BrowserSessionsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.sessions".into(),
+            name: "browser_sessions".into(),
             description: "List active Chromium-backed browser sessions tracked by FrankClaw.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1637,7 +1637,7 @@ impl Tool for BrowserSessionsTool {
 impl Tool for BrowserCloseTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.close".into(),
+            name: "browser_close".into(),
             description: "Close a Chromium-backed browser session and its DevTools target.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1665,7 +1665,7 @@ impl Tool for BrowserCloseTool {
 impl Tool for BrowserScreenshotTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.screenshot".into(),
+            name: "browser_screenshot".into(),
             description: "Capture a PNG screenshot of an existing Chromium-backed browser session. Returns base64-encoded PNG data.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1705,7 +1705,7 @@ impl Tool for BrowserScreenshotTool {
 impl Tool for BrowserAriaSnapshotTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "browser.aria_snapshot".into(),
+            name: "browser_aria_snapshot".into(),
             description: "Get an accessibility (ARIA) tree snapshot of an existing Chromium-backed browser session. Returns an indented text representation of interactive and content elements with [ref=eN] annotations for element targeting.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1994,8 +1994,8 @@ mod tests {
         let registry = ToolRegistry::with_builtins();
         let result = registry
             .invoke_allowed(
-                &["session.inspect".into()],
-                "session.inspect",
+                &["session_inspect".into()],
+                "session_inspect",
                 serde_json::json!({ "limit": 5 }),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2014,7 +2014,7 @@ mod tests {
             .await
             .expect("tool should succeed");
 
-        assert_eq!(result.name, "session.inspect");
+        assert_eq!(result.name, "session_inspect");
         assert_eq!(result.output["session"]["key"], serde_json::json!(key.as_str()));
         assert_eq!(result.output["entries"][0]["content"], serde_json::json!("hello"));
     }
@@ -2025,7 +2025,7 @@ mod tests {
         let err = registry
             .invoke_allowed(
                 &[],
-                "session.inspect",
+                "session_inspect",
                 serde_json::json!({}),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2093,12 +2093,12 @@ mod tests {
             config: None,
             workspace: None,
         };
-        let allowed = vec!["browser.open".into(), "browser.click".into()];
+        let allowed = vec!["browser_open".into(), "browser_click".into()];
 
         registry
             .invoke_allowed(
                 &allowed,
-                "browser.open",
+                "browser_open",
                 serde_json::json!({ "url": "https://example.com/" }),
                 ctx.clone(),
             )
@@ -2108,7 +2108,7 @@ mod tests {
         let err = registry
             .invoke_allowed(
                 &allowed,
-                "browser.click",
+                "browser_click",
                 serde_json::json!({ "selector": "#submit" }),
                 ctx,
             )
@@ -2147,23 +2147,23 @@ mod tests {
     fn policy_approved_tools_override_level() {
         let policy = ToolPolicy {
             approval_level: ApprovalLevel::ReadOnly,
-            approved_tools: std::collections::HashSet::from(["browser.click".into()]),
+            approved_tools: std::collections::HashSet::from(["browser_click".into()]),
         };
-        assert!(policy.is_approved("browser.click", ToolRiskLevel::Mutating));
-        assert!(!policy.is_approved("browser.type", ToolRiskLevel::Mutating));
-        assert!(policy.is_approved("browser.extract", ToolRiskLevel::ReadOnly));
+        assert!(policy.is_approved("browser_click", ToolRiskLevel::Mutating));
+        assert!(!policy.is_approved("browser_type", ToolRiskLevel::Mutating));
+        assert!(policy.is_approved("browser_extract", ToolRiskLevel::ReadOnly));
     }
 
     #[test]
     fn tool_risk_level_classification() {
         use frankclaw_core::model::ToolRiskLevel;
-        assert_eq!(tool_risk_level("browser.click"), ToolRiskLevel::Mutating);
-        assert_eq!(tool_risk_level("browser.type"), ToolRiskLevel::Mutating);
-        assert_eq!(tool_risk_level("browser.press"), ToolRiskLevel::Mutating);
+        assert_eq!(tool_risk_level("browser_click"), ToolRiskLevel::Mutating);
+        assert_eq!(tool_risk_level("browser_type"), ToolRiskLevel::Mutating);
+        assert_eq!(tool_risk_level("browser_press"), ToolRiskLevel::Mutating);
         assert_eq!(tool_risk_level("bash"), ToolRiskLevel::Mutating);
-        assert_eq!(tool_risk_level("browser.open"), ToolRiskLevel::ReadOnly);
-        assert_eq!(tool_risk_level("browser.extract"), ToolRiskLevel::ReadOnly);
-        assert_eq!(tool_risk_level("session.inspect"), ToolRiskLevel::ReadOnly);
+        assert_eq!(tool_risk_level("browser_open"), ToolRiskLevel::ReadOnly);
+        assert_eq!(tool_risk_level("browser_extract"), ToolRiskLevel::ReadOnly);
+        assert_eq!(tool_risk_level("session_inspect"), ToolRiskLevel::ReadOnly);
     }
 
     #[tokio::test]
@@ -2223,21 +2223,21 @@ mod tests {
             workspace: None,
         };
         let allowed = vec![
-            "browser.open".into(),
-            "browser.extract".into(),
-            "browser.snapshot".into(),
-            "browser.click".into(),
-            "browser.type".into(),
-            "browser.wait".into(),
-            "browser.press".into(),
-            "browser.sessions".into(),
-            "browser.close".into(),
+            "browser_open".into(),
+            "browser_extract".into(),
+            "browser_snapshot".into(),
+            "browser_click".into(),
+            "browser_type".into(),
+            "browser_wait".into(),
+            "browser_press".into(),
+            "browser_sessions".into(),
+            "browser_close".into(),
         ];
 
         let opened = registry
             .invoke_allowed(
                 &allowed,
-                "browser.open",
+                "browser_open",
                 serde_json::json!({ "url": "https://example.com/" }),
                 ctx.clone(),
             )
@@ -2248,7 +2248,7 @@ mod tests {
         let extracted = registry
             .invoke_allowed(
                 &allowed,
-                "browser.extract",
+                "browser_extract",
                 serde_json::json!({ "max_chars": 32 }),
                 ctx.clone(),
             )
@@ -2259,7 +2259,7 @@ mod tests {
         let snapshot = registry
             .invoke_allowed(
                 &allowed,
-                "browser.snapshot",
+                "browser_snapshot",
                 serde_json::json!({ "max_chars": 128 }),
                 ctx,
             )
@@ -2273,7 +2273,7 @@ mod tests {
         let clicked = registry
             .invoke_allowed(
                 &allowed,
-                "browser.click",
+                "browser_click",
                 serde_json::json!({ "selector": "#submit" }),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2296,7 +2296,7 @@ mod tests {
         let typed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.type",
+                "browser_type",
                 serde_json::json!({ "selector": "#query", "text": "frankclaw" }),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2324,7 +2324,7 @@ mod tests {
         let waited = registry
             .invoke_allowed(
                 &allowed,
-                "browser.wait",
+                "browser_wait",
                 serde_json::json!({ "text": "Typed frankclaw", "timeout_ms": 250 }),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2347,7 +2347,7 @@ mod tests {
         let pressed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.press",
+                "browser_press",
                 serde_json::json!({ "selector": "#query", "key": "Enter" }),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2375,7 +2375,7 @@ mod tests {
         let sessions = registry
             .invoke_allowed(
                 &allowed,
-                "browser.sessions",
+                "browser_sessions",
                 serde_json::json!({}),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2402,7 +2402,7 @@ mod tests {
         let closed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.close",
+                "browser_close",
                 serde_json::json!({}),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2425,7 +2425,7 @@ mod tests {
         let sessions_after_close = registry
             .invoke_allowed(
                 &allowed,
-                "browser.sessions",
+                "browser_sessions",
                 serde_json::json!({}),
                 ToolContext {
                     agent_id: AgentId::default_agent(),
@@ -2519,21 +2519,21 @@ mod tests {
             workspace: None,
         };
         let allowed = vec![
-            "browser.open".into(),
-            "browser.extract".into(),
-            "browser.snapshot".into(),
-            "browser.click".into(),
-            "browser.type".into(),
-            "browser.wait".into(),
-            "browser.press".into(),
-            "browser.sessions".into(),
-            "browser.close".into(),
+            "browser_open".into(),
+            "browser_extract".into(),
+            "browser_snapshot".into(),
+            "browser_click".into(),
+            "browser_type".into(),
+            "browser_wait".into(),
+            "browser_press".into(),
+            "browser_sessions".into(),
+            "browser_close".into(),
         ];
 
         let opened = registry
             .invoke_allowed(
                 &allowed,
-                "browser.open",
+                "browser_open",
                 serde_json::json!({ "url": format!("http://{addr}/") }),
                 ctx.clone(),
             )
@@ -2544,7 +2544,7 @@ mod tests {
         let waited = registry
             .invoke_allowed(
                 &allowed,
-                "browser.wait",
+                "browser_wait",
                 serde_json::json!({ "selector": "body[data-ready='1']", "text": "Loaded", "timeout_ms": 2_000 }),
                 ctx.clone(),
             )
@@ -2560,7 +2560,7 @@ mod tests {
         let typed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.type",
+                "browser_type",
                 serde_json::json!({ "selector": "#query", "text": "frankclaw" }),
                 ctx.clone(),
             )
@@ -2577,7 +2577,7 @@ mod tests {
         let pressed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.press",
+                "browser_press",
                 serde_json::json!({ "selector": "#query", "key": "Enter" }),
                 ctx.clone(),
             )
@@ -2594,7 +2594,7 @@ mod tests {
         let clicked = registry
             .invoke_allowed(
                 &allowed,
-                "browser.click",
+                "browser_click",
                 serde_json::json!({ "selector": "#submit" }),
                 ctx.clone(),
             )
@@ -2611,7 +2611,7 @@ mod tests {
         let snapshot = registry
             .invoke_allowed(
                 &allowed,
-                "browser.snapshot",
+                "browser_snapshot",
                 serde_json::json!({ "max_chars": 4096 }),
                 ctx.clone(),
             )
@@ -2627,7 +2627,7 @@ mod tests {
         let sessions = registry
             .invoke_allowed(
                 &allowed,
-                "browser.sessions",
+                "browser_sessions",
                 serde_json::json!({}),
                 ctx.clone(),
             )
@@ -2638,7 +2638,7 @@ mod tests {
         let closed = registry
             .invoke_allowed(
                 &allowed,
-                "browser.close",
+                "browser_close",
                 serde_json::json!({}),
                 ctx.clone(),
             )
@@ -2649,7 +2649,7 @@ mod tests {
         let sessions_after_close = registry
             .invoke_allowed(
                 &allowed,
-                "browser.sessions",
+                "browser_sessions",
                 serde_json::json!({}),
                 ctx,
             )

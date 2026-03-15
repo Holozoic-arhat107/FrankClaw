@@ -56,7 +56,7 @@ For channel setup, see [CHANNEL_SETUP.md](docs/CHANNEL_SETUP.md), `examples/chan
 - **Job state machine** — Full lifecycle tracking (Pending→InProgress→Completed→Accepted) with stuck detection and self-repair
 - **Interactive REPL** — `frankclaw chat` with streaming responses, slash commands, tab completion, and history persistence
 - **Canvas host** — local authenticated visual workspace surface
-- **Bounded tools** — session inspection plus Chromium-backed `browser.open`, `browser.extract`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.wait`, `browser.press`, `browser.sessions`, and `browser.close`
+- **Bounded tools** — session inspection plus Chromium-backed `browser_open`, `browser_extract`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_wait`, `browser_press`, `browser_sessions`, and `browser_close`
 - **3-tier tool risk levels** — Tools are classified as ReadOnly, Mutating, or Destructive. Approval gates are controlled via `FRANKCLAW_TOOL_APPROVAL` with per-tool overrides.
 - **Bash tool** — Shell command execution with timeout, output truncation, and configurable security policy (deny-all, allowlist, or allow-all)
 - **Optional sandbox** — [ai-jail](https://github.com/akitaonrails/ai-jail) integration (bubblewrap + landlock) for OS-level command isolation, complementary to the bash allowlist
@@ -268,16 +268,16 @@ default_agent = "default"
 
 [agents.agents.default]
 tools = [
-    "session.inspect",
-    "browser.open",
-    "browser.extract",
-    "browser.snapshot",
-    "browser.click",
-    "browser.type",
-    "browser.wait",
-    "browser.press",
-    "browser.sessions",
-    "browser.close",
+    "session_inspect",
+    "browser_open",
+    "browser_extract",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_wait",
+    "browser_press",
+    "browser_sessions",
+    "browser_close",
 ]
 ```
 
@@ -298,7 +298,7 @@ frankclaw tools invoke --tool browser.sessions --session default:web:control
 frankclaw tools invoke --tool browser.close --session default:web:control
 ```
 
-`browser.click`, `browser.type`, `browser.press`, and `browser.select_option` are classified as **Mutating** tools and require `FRANKCLAW_TOOL_APPROVAL=mutating` (or the legacy `FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1`).
+`browser_click`, `browser_type`, `browser_press`, and `browser.select_option` are classified as **Mutating** tools and require `FRANKCLAW_TOOL_APPROVAL=mutating` (or the legacy `FRANKCLAW_ALLOW_BROWSER_MUTATIONS=1`).
 
 Live regression check against a real local Chromium instance:
 

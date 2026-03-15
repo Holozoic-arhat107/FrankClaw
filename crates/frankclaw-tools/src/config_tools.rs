@@ -58,7 +58,7 @@ pub struct ConfigGetTool;
 impl Tool for ConfigGetTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "config.get".into(),
+            name: "config_get".into(),
             description: "Inspect the FrankClaw gateway configuration. \
                 Secrets are automatically redacted."
                 .into(),
@@ -122,7 +122,7 @@ pub struct AgentsListTool;
 impl Tool for AgentsListTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "agents.list".into(),
+            name: "agents_list".into(),
             description: "List all configured agents with their IDs, names, models, and tools."
                 .into(),
             parameters: serde_json::json!({

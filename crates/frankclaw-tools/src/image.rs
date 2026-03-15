@@ -67,7 +67,7 @@ pub struct ImageDescribeTool;
 impl Tool for ImageDescribeTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "image.describe".into(),
+            name: "image_describe".into(),
             description: "Load one or more images from the workspace for visual analysis. \
                 The images are sent to the model so it can describe or analyze their contents. \
                 Use this when you need to understand what an image shows."
@@ -207,7 +207,7 @@ mod tests {
     fn image_describe_definition_is_valid() {
         let tool = ImageDescribeTool;
         let def = tool.definition();
-        assert_eq!(def.name, "image.describe");
+        assert_eq!(def.name, "image_describe");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }

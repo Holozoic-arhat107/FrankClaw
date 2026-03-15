@@ -198,7 +198,7 @@ fn required_capabilities_for_tools(tools: &[String]) -> std::collections::HashSe
     tools
         .iter()
         .filter_map(|tool| match tool.as_str() {
-            "session.inspect" => Some(SkillCapability::ReadSession),
+            "session_inspect" => Some(SkillCapability::ReadSession),
             _ => None,
         })
         .collect()
@@ -258,7 +258,7 @@ mod tests {
                 "name": "Briefing",
                 "prompt": "Summarize clearly.",
                 "capabilities": ["prompt", "read_session"],
-                "tools": ["session.inspect"]
+                "tools": ["session_inspect"]
             })
             .to_string(),
         )
@@ -266,7 +266,7 @@ mod tests {
 
         let manifest = load_workspace_skill(&root, "briefing").expect("skill should load");
         assert_eq!(manifest.id, "briefing");
-        assert_eq!(manifest.tools, vec!["session.inspect"]);
+        assert_eq!(manifest.tools, vec!["session_inspect"]);
         assert_eq!(
             manifest.capabilities,
             vec![SkillCapability::Prompt, SkillCapability::ReadSession]
@@ -293,7 +293,7 @@ mod tests {
                 "name": "Briefing",
                 "prompt": "Summarize clearly.",
                 "capabilities": ["prompt"],
-                "tools": ["session.inspect"]
+                "tools": ["session_inspect"]
             })
             .to_string(),
         )

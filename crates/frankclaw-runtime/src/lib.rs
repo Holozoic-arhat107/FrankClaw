@@ -2245,7 +2245,7 @@ mod tests {
         let sessions = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
         let mut config = FrankClawConfig::default();
         config.agents.agents.get_mut(&AgentId::default_agent()).unwrap().tools =
-            vec!["session.inspect".into()];
+            vec!["session_inspect".into()];
         let runtime = Runtime::from_providers(
             &config,
             sessions.clone() as Arc<dyn SessionStore>,
@@ -2282,13 +2282,13 @@ mod tests {
             .invoke_tool(ToolRequest {
                 agent_id: None,
                 session_key: Some(chat.session_key.clone()),
-                tool_name: "session.inspect".into(),
+                tool_name: "session_inspect".into(),
                 arguments: serde_json::json!({ "limit": 5 }),
             })
             .await
             .expect("tool should run");
 
-        assert_eq!(tool.name, "session.inspect");
+        assert_eq!(tool.name, "session_inspect");
         assert_eq!(
             tool.output["session"]["key"],
             serde_json::json!(chat.session_key.as_str())
@@ -2442,7 +2442,7 @@ mod tests {
         let sessions = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
         let mut config = FrankClawConfig::default();
         config.agents.agents.get_mut(&AgentId::default_agent()).unwrap().tools =
-            vec!["session.inspect".into()];
+            vec!["session_inspect".into()];
 
         let provider = Arc::new(MockProvider::scripted(
             "primary",
@@ -2452,7 +2452,7 @@ mod tests {
                     content: String::new(),
                     tool_calls: vec![ToolCallResponse {
                         id: "call-1".into(),
-                        name: "session.inspect".into(),
+                        name: "session_inspect".into(),
                         arguments: r#"{"limit":2}"#.into(),
                     }],
                     finish_reason: FinishReason::ToolUse,
@@ -2520,7 +2520,7 @@ mod tests {
         assert_eq!(seen.len(), 2);
         // Agent has 1 tool + spawn_subagent injected by runtime.
         assert_eq!(seen[0].tools.len(), 2);
-        assert!(seen[0].tools.iter().any(|t| t.name == "session.inspect"));
+        assert!(seen[0].tools.iter().any(|t| t.name == "session_inspect"));
         assert!(seen[1]
             .messages
             .iter()
@@ -2531,7 +2531,7 @@ mod tests {
             .await
             .expect("tool activity should load");
         assert_eq!(activity.len(), 1);
-        assert_eq!(activity[0].tool_name, "session.inspect");
+        assert_eq!(activity[0].tool_name, "session_inspect");
         assert_eq!(activity[0].tool_call_id.as_deref(), Some("call-1"));
         assert!(activity[0].output_preview.contains("\"entries\""));
 
@@ -2547,7 +2547,7 @@ mod tests {
         let sessions: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
         let mut config = FrankClawConfig::default();
         config.agents.agents.get_mut(&AgentId::default_agent()).unwrap().tools =
-            vec!["session.inspect".into()];
+            vec!["session_inspect".into()];
 
         // First response: tool call with invalid JSON args.
         // Second response: model sees the error result and replies with text.
@@ -2562,7 +2562,7 @@ mod tests {
                         content: String::new(),
                         tool_calls: vec![ToolCallResponse {
                             id: "call-1".into(),
-                            name: "session.inspect".into(),
+                            name: "session_inspect".into(),
                             arguments: "{not-json}".into(),
                         }],
                         finish_reason: FinishReason::ToolUse,
@@ -2623,11 +2623,11 @@ mod tests {
         let sessions = Arc::new(SqliteSessionStore::open(&temp, None).expect("sessions should open"));
         let mut config = FrankClawConfig::default();
         config.agents.agents.get_mut(&AgentId::default_agent()).unwrap().tools =
-            vec!["session.inspect".into()];
+            vec!["session_inspect".into()];
         let tool_calls = (0..9)
             .map(|index| ToolCallResponse {
                 id: format!("call-{index}"),
-                name: "session.inspect".into(),
+                name: "session_inspect".into(),
                 arguments: r#"{"limit":1}"#.into(),
             })
             .collect();
@@ -2739,7 +2739,7 @@ mod tests {
             .agents
             .get_mut(&AgentId::default_agent())
             .unwrap()
-            .tools = vec!["session.inspect".into()];
+            .tools = vec!["session_inspect".into()];
 
         // Model keeps calling same tool with same args every round.
         let mut responses = Vec::new();
@@ -2748,7 +2748,7 @@ mod tests {
                 content: String::new(),
                 tool_calls: vec![ToolCallResponse {
                     id: "call-loop".into(),
-                    name: "session.inspect".into(),
+                    name: "session_inspect".into(),
                     arguments: r#"{"limit":1}"#.into(),
                 }],
                 finish_reason: FinishReason::ToolUse,
@@ -2837,7 +2837,7 @@ mod tests {
             .agents
             .get_mut(&AgentId::default_agent())
             .unwrap()
-            .tools = vec!["session.inspect".into()];
+            .tools = vec!["session_inspect".into()];
 
         // Round 1: model returns text + tool call
         // Round 2: model returns final response (no tool calls)
@@ -2849,7 +2849,7 @@ mod tests {
                     content: "Let me check that for you...".into(),
                     tool_calls: vec![ToolCallResponse {
                         id: "call-1".into(),
-                        name: "session.inspect".into(),
+                        name: "session_inspect".into(),
                         arguments: r#"{"limit": 5}"#.into(),
                     }],
                     finish_reason: FinishReason::ToolUse,
@@ -2926,7 +2926,7 @@ mod tests {
             .agents
             .get_mut(&AgentId::default_agent())
             .unwrap()
-            .tools = vec!["session.inspect".into()];
+            .tools = vec!["session_inspect".into()];
 
         // Round 1: tool call with large output that should trigger mid-loop compaction
         // Round 2: final response
@@ -2938,7 +2938,7 @@ mod tests {
                     content: "checking".into(),
                     tool_calls: vec![ToolCallResponse {
                         id: "call-1".into(),
-                        name: "session.inspect".into(),
+                        name: "session_inspect".into(),
                         arguments: r#"{"limit": 5}"#.into(),
                     }],
                     finish_reason: FinishReason::ToolUse,

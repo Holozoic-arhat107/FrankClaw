@@ -265,16 +265,16 @@ chromium \
     "agents": {
       "default": {
         "tools": [
-          "session.inspect",
-          "browser.open",
-          "browser.extract",
-          "browser.snapshot",
-          "browser.click",
-          "browser.type",
-          "browser.wait",
-          "browser.press",
-          "browser.sessions",
-          "browser.close"
+          "session_inspect",
+          "browser_open",
+          "browser_extract",
+          "browser_snapshot",
+          "browser_click",
+          "browser_type",
+          "browser_wait",
+          "browser_press",
+          "browser_sessions",
+          "browser_close"
         ]
       }
     }

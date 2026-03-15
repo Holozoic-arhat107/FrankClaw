@@ -4,25 +4,6 @@ use frankclaw_core::error::{FrankClawError, Result};
 use frankclaw_core::model::*;
 use frankclaw_core::types::Role;
 
-/// Sanitize a tool name for OpenAI compatibility (dots → underscores).
-/// OpenAI requires tool names to match `^[a-zA-Z0-9_-]+$`.
-fn sanitize_tool_name(name: &str) -> String {
-    name.replace('.', "_")
-}
-
-/// Restore a sanitized tool name back to FrankClaw's internal format (underscores → dots)
-/// for names that were originally dot-separated (e.g., `browser_open` → `browser.open`).
-fn restore_tool_name(name: &str) -> String {
-    // Known prefixes that use dot notation internally.
-    const PREFIXES: &[&str] = &["browser_", "session_"];
-    for prefix in PREFIXES {
-        if name.starts_with(prefix) {
-            return name.replacen('_', ".", 1);
-        }
-    }
-    name.to_string()
-}
-
 /// Build an OpenAI-compatible chat completions request body.
 pub(crate) fn build_request_body(request: &CompletionRequest) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = {
@@ -44,7 +25,7 @@ pub(crate) fn build_request_body(request: &CompletionRequest) -> serde_json::Val
                             "id": tc.id,
                             "type": "function",
                             "function": {
-                                "name": sanitize_tool_name(&tc.name),
+                                "name": &tc.name,
                                 "arguments": tc.arguments,
                             }
                         })
@@ -112,7 +93,7 @@ pub(crate) fn build_request_body(request: &CompletionRequest) -> serde_json::Val
                 serde_json::json!({
                     "type": "function",
                     "function": {
-                        "name": sanitize_tool_name(&t.name),
+                        "name": &t.name,
                         "description": t.description,
                         "parameters": t.parameters,
                     }
@@ -160,7 +141,7 @@ pub(crate) fn parse_completion_response(data: &serde_json::Value) -> Result<Comp
                 .filter_map(|tc| {
                     Some(ToolCallResponse {
                         id: tc["id"].as_str()?.to_string(),
-                        name: restore_tool_name(tc["function"]["name"].as_str()?),
+                        name: tc["function"]["name"].as_str()?.to_string(),
                         arguments: tc["function"]["arguments"]
                             .as_str()
                             .unwrap_or("{}")
@@ -276,7 +257,7 @@ pub(crate) fn apply_stream_event(
                     entry.id = id.to_string();
                 }
                 if let Some(name) = tool_call["function"]["name"].as_str() {
-                    entry.name = restore_tool_name(name);
+                    entry.name = name.to_string();
                 }
                 if !entry.started && !entry.id.is_empty() && !entry.name.is_empty() {
                     entry.started = true;

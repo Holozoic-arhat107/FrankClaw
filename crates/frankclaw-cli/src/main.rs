@@ -1320,7 +1320,7 @@ fn collect_browser_tool_warnings_with_policy(
         .agents
         .values()
         .flat_map(|agent| agent.tools.iter())
-        .any(|tool| tool.starts_with("browser."));
+        .any(|tool| tool.starts_with("browser_"));
     if !browser_tools_enabled {
         return Vec::new();
     }
@@ -1392,7 +1392,7 @@ fn browser_runtime_status_with_policy(
             .agents
             .values()
             .flat_map(|agent| agent.tools.iter())
-            .any(|tool| tool.starts_with("browser."))
+            .any(|tool| tool.starts_with("browser_"))
         {
             let has_mutating = config
                 .agents
@@ -3635,7 +3635,7 @@ mod tests {
             .agents
             .get_mut(&frankclaw_core::types::AgentId::default_agent())
             .expect("default agent should exist")
-            .tools = vec!["browser.close".into()];
+            .tools = vec!["browser_close".into()];
 
         let warnings = collect_browser_tool_warnings(&config, Some("http://10.0.0.8:6553/"));
 
@@ -3655,7 +3655,7 @@ mod tests {
             .agents
             .get_mut(&frankclaw_core::types::AgentId::default_agent())
             .expect("default agent should exist")
-            .tools = vec!["browser.type".into()];
+            .tools = vec!["browser_type".into()];
 
         let warnings = collect_browser_tool_warnings_with_policy(
             &config,
@@ -3676,7 +3676,7 @@ mod tests {
             .agents
             .get_mut(&frankclaw_core::types::AgentId::default_agent())
             .expect("default agent should exist")
-            .tools = vec!["browser.open".into(), "browser.click".into()];
+            .tools = vec!["browser_open".into(), "browser_click".into()];
 
         let gated = browser_runtime_status_with_policy(
             &config,

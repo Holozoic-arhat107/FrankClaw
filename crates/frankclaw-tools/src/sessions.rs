@@ -21,7 +21,7 @@ pub struct SessionsListTool;
 impl Tool for SessionsListTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "sessions.list".into(),
+            name: "sessions_list".into(),
             description: "List sessions for the current agent. Returns session keys, \
                 channels, and last activity timestamps."
                 .into(),
@@ -75,7 +75,7 @@ pub struct SessionsHistoryTool;
 impl Tool for SessionsHistoryTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "sessions.history".into(),
+            name: "sessions_history".into(),
             description: "Get transcript history for a session. \
                 Returns recent messages with roles, content, and timestamps."
                 .into(),
@@ -154,7 +154,7 @@ mod tests {
     fn sessions_list_definition_is_valid() {
         let tool = SessionsListTool;
         let def = tool.definition();
-        assert_eq!(def.name, "sessions.list");
+        assert_eq!(def.name, "sessions_list");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 
@@ -162,7 +162,7 @@ mod tests {
     fn sessions_history_definition_is_valid() {
         let tool = SessionsHistoryTool;
         let def = tool.definition();
-        assert_eq!(def.name, "sessions.history");
+        assert_eq!(def.name, "sessions_history");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }

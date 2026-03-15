@@ -98,7 +98,7 @@ pub struct FileReadTool;
 impl Tool for FileReadTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "file.read".into(),
+            name: "file_read".into(),
             description: "Read a file from the workspace directory. \
                 Returns the file content with line numbers."
                 .into(),
@@ -191,7 +191,7 @@ pub struct FileWriteTool;
 impl Tool for FileWriteTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "file.write".into(),
+            name: "file_write".into(),
             description: "Create or overwrite a file in the workspace directory."
                 .into(),
             parameters: serde_json::json!({
@@ -278,7 +278,7 @@ pub struct FileEditTool;
 impl Tool for FileEditTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "file.edit".into(),
+            name: "file_edit".into(),
             description: "Search and replace text in a file. \
                 The old_text must match exactly once in the file."
                 .into(),

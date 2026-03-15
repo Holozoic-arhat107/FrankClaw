@@ -108,7 +108,7 @@ These are the core "brain" features that make OpenClaw's agent loop sophisticate
 
 - [x] **Media Understanding** — Multi-provider vision (OpenAI, Anthropic, Ollama) and audio
   transcription (Whisper), fallback chain, media kind classification, attachment processing
-  pipeline with size limits and graceful error handling, `audio.transcribe` tool, configurable
+  pipeline with size limits and graceful error handling, `audio_transcribe` tool, configurable
   via `MediaUnderstandingConfig`. (`frankclaw-media/src/understanding.rs`,
   `frankclaw-tools/src/audio.rs`, `frankclaw-core/src/media.rs`)
 

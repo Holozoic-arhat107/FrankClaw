@@ -24,7 +24,7 @@ pub struct WebFetchTool;
 impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "web.fetch".into(),
+            name: "web_fetch".into(),
             description: "Fetch a URL and return its content as text or markdown. \
                 Useful for reading web pages, API responses, or downloading text content."
                 .into(),
@@ -151,7 +151,7 @@ pub struct WebSearchTool;
 impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "web.search".into(),
+            name: "web_search".into(),
             description: "Search the web using the Brave Search API. \
                 Returns titles, URLs, and descriptions of matching web pages."
                 .into(),

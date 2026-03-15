@@ -55,7 +55,7 @@ pub struct AudioTranscribeTool;
 impl Tool for AudioTranscribeTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "audio.transcribe".into(),
+            name: "audio_transcribe".into(),
             description: "Transcribe an audio file from the workspace to text. \
                 Supports MP3, WAV, OGG, M4A, FLAC, WebM, AAC, and WMA formats. \
                 Returns the transcription text."
@@ -160,7 +160,7 @@ mod tests {
     fn audio_transcribe_definition_is_valid() {
         let tool = AudioTranscribeTool;
         let def = tool.definition();
-        assert_eq!(def.name, "audio.transcribe");
+        assert_eq!(def.name, "audio_transcribe");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }

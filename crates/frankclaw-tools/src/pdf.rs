@@ -35,7 +35,7 @@ pub struct PdfReadTool;
 impl Tool for PdfReadTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "pdf.read".into(),
+            name: "pdf_read".into(),
             description: "Extract text content from a PDF file in the workspace. \
                 Returns the extracted text with page markers."
                 .into(),
@@ -243,7 +243,7 @@ mod tests {
     fn pdf_read_definition_is_valid() {
         let tool = PdfReadTool;
         let def = tool.definition();
-        assert_eq!(def.name, "pdf.read");
+        assert_eq!(def.name, "pdf_read");
         assert_eq!(def.risk_level, ToolRiskLevel::ReadOnly);
     }
 }
