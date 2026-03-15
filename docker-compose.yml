@@ -22,12 +22,12 @@ services:
       - path: .env.docker
         required: false
     environment:
-      FRANKCLAW_CONFIG: /config/frankclaw.json
+      FRANKCLAW_CONFIG: /config/frankclaw.toml
       FRANKCLAW_STATE_DIR: /var/lib/frankclaw
       FRANKCLAW_BROWSER_DEVTOOLS_URL: http://chromium:9222/
       FRANKCLAW_BASH_POLICY: deny-all
     volumes:
-      - ./frankclaw.json:/config/frankclaw.json:ro
+      - ./frankclaw.toml:/config/frankclaw.toml:ro
       - frankclaw-state:/var/lib/frankclaw
     # Uncomment to access the gateway directly from the host:
     # ports:

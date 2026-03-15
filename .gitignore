@@ -6,6 +6,7 @@ target/
 !.env.smoke.example
 !.env.docker.example
 frankclaw.json
+frankclaw.toml
 state/
 docker/cloudflared/config.yml
 docker/cloudflared/credentials.json

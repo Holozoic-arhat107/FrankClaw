@@ -54,8 +54,15 @@ impl FrankClawConfig {
         let content = std::fs::read_to_string(path).map_err(|err| FrankClawError::ConfigIo {
             msg: format!("failed to read config '{}': {err}", path.display()),
         })?;
-        serde_json::from_str(&content).map_err(|err| FrankClawError::ConfigIo {
+        toml::from_str(&content).map_err(|err| FrankClawError::ConfigIo {
             msg: format!("failed to parse config '{}': {err}", path.display()),
+        })
+    }
+
+    /// Serialize this config to a pretty-printed TOML string.
+    pub fn to_toml_string(&self) -> Result<String> {
+        toml::to_string_pretty(self).map_err(|err| FrankClawError::ConfigIo {
+            msg: format!("failed to serialize config: {err}"),
         })
     }
 
@@ -1140,7 +1147,7 @@ mod tests {
     #[test]
     fn load_or_default_returns_default_when_file_is_missing() {
         let path = std::env::temp_dir().join(format!(
-            "frankclaw-missing-config-{}.json",
+            "frankclaw-missing-config-{}.toml",
             uuid::Uuid::new_v4()
         ));
 
@@ -1150,19 +1157,14 @@ mod tests {
     }
 
     #[test]
-    fn load_from_path_reads_json_config() {
+    fn load_from_path_reads_toml_config() {
         let path = std::env::temp_dir().join(format!(
-            "frankclaw-config-load-{}.json",
+            "frankclaw-config-load-{}.toml",
             uuid::Uuid::new_v4()
         ));
         std::fs::write(
             &path,
-            serde_json::json!({
-                "gateway": {
-                    "port": 19999
-                }
-            })
-            .to_string(),
+            "[gateway]\nport = 19999\n",
         )
         .expect("config should write");
 
@@ -1170,5 +1172,13 @@ mod tests {
 
         assert_eq!(loaded.gateway.port, 19999);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn to_toml_string_roundtrips() {
+        let config = FrankClawConfig::default();
+        let toml_str = config.to_toml_string().expect("should serialize");
+        let loaded: FrankClawConfig = toml::from_str(&toml_str).expect("should parse back");
+        assert_eq!(loaded.gateway.port, config.gateway.port);
     }
 }

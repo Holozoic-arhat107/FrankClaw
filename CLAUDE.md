@@ -87,7 +87,7 @@ All user-facing text in the CLI (`crates/frankclaw-cli`) is internationalized us
 
 ## Key Paths
 
-- Config: `~/.local/share/frankclaw/frankclaw.json` (or `FRANKCLAW_STATE_DIR`)
+- Config: `~/.local/share/frankclaw/frankclaw.toml` (or `FRANKCLAW_STATE_DIR`)
 - Sessions DB: `<state_dir>/sessions.db`
 - PID file: `<state_dir>/frankclaw.pid` (daemon mode)
 - Prompt templates: `crates/frankclaw-runtime/prompts/*.md` (embedded at compile time)

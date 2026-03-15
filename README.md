@@ -143,7 +143,7 @@ The binary is at `target/release/frankclaw`.
 ./target/release/frankclaw onboard --channel web
 ```
 
-This creates `~/.local/share/frankclaw/frankclaw.json` with secure defaults and `0600` file permissions.
+This creates `~/.local/share/frankclaw/frankclaw.toml` with secure defaults and `0600` file permissions.
 Use `--channel telegram`, `--channel whatsapp`, `--channel slack`, `--channel discord`, `--channel signal`, or `--channel email` to start from a channel-specific profile.
 
 ### 3. Generate an Auth Token
@@ -154,34 +154,24 @@ Use `--channel telegram`, `--channel whatsapp`, `--channel slack`, `--channel di
 
 Copy the output token (256-bit, base64url-encoded) and add it to your config:
 
-```json
-{
-  "gateway": {
-    "auth": {
-      "mode": "token",
-      "token": "YOUR_TOKEN_HERE"
-    }
-  }
-}
+```toml
+[gateway.auth]
+mode = "token"
+token = "YOUR_TOKEN_HERE"
 ```
 
 ### 4. Configure a Model Provider
 
 Add at least one AI provider to your config. For local-only setup with Ollama:
 
-```json
-{
-  "models": {
-    "providers": [
-      {
-        "id": "ollama",
-        "api": "ollama",
-        "base_url": "http://127.0.0.1:11434"
-      }
-    ],
-    "default_model": "llama3"
-  }
-}
+```toml
+[models]
+default_model = "llama3"
+
+[[models.providers]]
+id = "ollama"
+api = "ollama"
+base_url = "http://127.0.0.1:11434"
 ```
 
 For OpenAI or Anthropic, set the API key via environment variable:
@@ -194,20 +184,13 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 And add the provider to config:
 
-```json
-{
-  "models": {
-    "providers": [
-      {
-        "id": "openai",
-        "api": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "api_key_ref": "OPENAI_API_KEY",
-        "models": ["gpt-4o", "gpt-4o-mini"]
-      }
-    ]
-  }
-}
+```toml
+[[models.providers]]
+id = "openai"
+api = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_ref = "OPENAI_API_KEY"
+models = ["gpt-4o", "gpt-4o-mini"]
 ```
 
 ### 5. Start the Gateway
@@ -257,8 +240,8 @@ chromium \
 
 ```bash
 # 1. Create your config from the example
-cp frankclaw.json.example frankclaw.json
-# Edit frankclaw.json — enable channels, set auth token, add tools
+cp frankclaw.toml.example frankclaw.toml
+# Edit frankclaw.toml — enable channels, set auth token, add tools
 
 # 2. Set up secrets
 cp .env.docker.example .env.docker
@@ -275,32 +258,27 @@ chmod 644 docker/cloudflared/credentials.json docker/cloudflared/cert.pem
 docker compose up -d
 ```
 
-The gateway binds to `0.0.0.0` inside the container (LAN mode) so cloudflared can reach it. Auth is required — set a token in `frankclaw.json`. To access the gateway directly from the host (for debugging), uncomment the `ports` section in `docker-compose.yml`.
+The gateway binds to `0.0.0.0` inside the container (LAN mode) so cloudflared can reach it. Auth is required — set a token in `frankclaw.toml`. To access the gateway directly from the host (for debugging), uncomment the `ports` section in `docker-compose.yml`.
 
 Then allow browser tools on an agent:
 
-```json
-{
-  "agents": {
-    "default_agent": "default",
-    "agents": {
-      "default": {
-        "tools": [
-          "session.inspect",
-          "browser.open",
-          "browser.extract",
-          "browser.snapshot",
-          "browser.click",
-          "browser.type",
-          "browser.wait",
-          "browser.press",
-          "browser.sessions",
-          "browser.close"
-        ]
-      }
-    }
-  }
-}
+```toml
+[agents]
+default_agent = "default"
+
+[agents.agents.default]
+tools = [
+    "session.inspect",
+    "browser.open",
+    "browser.extract",
+    "browser.snapshot",
+    "browser.click",
+    "browser.type",
+    "browser.wait",
+    "browser.press",
+    "browser.sessions",
+    "browser.close",
+]
 ```
 
 Example use:
@@ -493,103 +471,91 @@ The config file and `.env` may contain API keys and tokens. **Mitigation:** `060
 
 ## Configuration Reference
 
-FrankClaw uses a single JSON config file. All fields have secure defaults.
+FrankClaw uses a single TOML config file. All fields have secure defaults.
 
-```jsonc
-{
-  // Gateway server settings
-  "gateway": {
-    "port": 18789,              // TCP port
-    "bind": "loopback",         // "loopback", "lan", or a specific IP
-    "auth": {
-      "mode": "token",          // "none", "token", "password", "trusted_proxy", "tailscale"
-      "token": "..."            // 256-bit base64url token (from gen-token)
-    },
-    "rate_limit": {
-      "max_attempts": 5,        // Failed auths before lockout
-      "window_secs": 60,        // Sliding window
-      "lockout_secs": 300       // Lockout duration
-    },
-    "max_ws_message_bytes": 4194304,  // 4 MB
-    "max_connections": 64
-  },
+```toml
+# Gateway server settings
+[gateway]
+port = 18789                    # TCP port
+bind = "loopback"               # "loopback", "lan", or a specific IP
+max_ws_message_bytes = 4194304  # 4 MB
+max_connections = 64
 
-  // Agent definitions
-  "agents": {
-    "default_agent": "default",
-    "agents": {
-      "default": {
-        "name": "Default Agent",
-        "model": "gpt-4o",
-        "system_prompt": "You are a helpful assistant.",
-        "sandbox": { "mode": "none" }
-      }
-    }
-  },
+[gateway.auth]
+mode = "token"                  # "none", "token", "password", "trusted_proxy", "tailscale"
+token = "..."                   # 256-bit base64url token (from gen-token)
 
-  // Model providers (tried in order for failover)
-  "models": {
-    "providers": [
-      {
-        "id": "openai",
-        "api": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "api_key_ref": "OPENAI_API_KEY",
-        "models": ["gpt-4o", "gpt-4o-mini"],
-        "cooldown_secs": 60
-      }
-    ],
-    "default_model": "gpt-4o"
-  },
+[gateway.rate_limit]
+max_attempts = 5                # Failed auths before lockout
+window_secs = 60                # Sliding window
+lockout_secs = 300              # Lockout duration
 
-  // Session management
-  "session": {
-    "scoping": "main",         // "main", "per_peer", "per_channel_peer", "global"
-    "reset": {
-      "daily_at_hour": null,   // UTC hour (0-23) or null
-      "idle_timeout_secs": null,
-      "max_entries": 500
-    },
-    "pruning": {
-      "max_age_days": 30,
-      "max_sessions_per_agent": 500,
-      "disk_budget_bytes": 10485760  // 10 MB
-    }
-  },
+# Agent definitions
+[agents]
+default_agent = "default"
 
-  // Security settings
-  "security": {
-    "encrypt_sessions": true,   // ChaCha20-Poly1305 encryption at rest
-    "encrypt_media": false,     // Optional media encryption (performance trade-off)
-    "ssrf_protection": true,    // Block fetches to private IP ranges
-    "max_webhook_body_bytes": 1048576  // 1 MB
-  },
+[agents.agents.default]
+name = "Default Agent"
+model = "gpt-4o"
+system_prompt = "You are a helpful assistant."
 
-  // Media pipeline
-  "media": {
-    "max_file_size_bytes": 5242880,  // 5 MB
-    "ttl_hours": 2
-  },
+[agents.agents.default.sandbox]
+mode = "none"
 
-  // Media understanding (vision + transcription)
-  "understanding": {
-    "enabled": false,
-    "vision_provider": "openai",       // "openai", "anthropic", "ollama", or "none"
-    "vision_model": "gpt-4o",
-    "vision_api_key_ref": "OPENAI_API_KEY",
-    "transcription_provider": "openai", // "openai" or "none"
-    "transcription_model": "whisper-1",
-    "transcription_api_key_ref": "OPENAI_API_KEY",
-    "auto_transcribe_voice": false
-  },
+# Model providers (tried in order for failover)
+[models]
+default_model = "gpt-4o"
 
-  // Logging
-  "logging": {
-    "level": "info",           // trace, debug, info, warn, error
-    "format": "pretty",       // "pretty", "json", "compact"
-    "redact_secrets": true     // Replace secrets with [REDACTED] in logs
-  }
-}
+[[models.providers]]
+id = "openai"
+api = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_ref = "OPENAI_API_KEY"
+models = ["gpt-4o", "gpt-4o-mini"]
+cooldown_secs = 60
+
+# Session management
+[session]
+scoping = "main"                # "main", "per_peer", "per_channel_peer", "global"
+
+[session.reset]
+# daily_at_hour = 0             # UTC hour (0-23), omit to disable
+# idle_timeout_secs = 3600      # omit to disable
+max_entries = 500
+
+[session.pruning]
+max_age_days = 30
+max_sessions_per_agent = 500
+disk_budget_bytes = 10485760    # 10 MB
+
+# Security settings
+[security]
+encrypt_sessions = true         # ChaCha20-Poly1305 encryption at rest
+encrypt_media = false           # Optional media encryption (performance trade-off)
+ssrf_protection = true          # Block fetches to private IP ranges
+max_webhook_body_bytes = 1048576  # 1 MB
+
+# Media pipeline
+[media]
+max_file_size_bytes = 5242880   # 5 MB
+ttl_hours = 2
+
+# Media understanding (vision + transcription)
+[understanding]
+enabled = false
+vision_provider = "openai"          # "openai", "anthropic", "ollama", or "none"
+vision_model = "gpt-4o"
+vision_api_key_ref = "OPENAI_API_KEY"
+transcription_provider = "openai"   # "openai" or "none"
+transcription_model = "whisper-1"
+transcription_api_key_ref = "OPENAI_API_KEY"
+auto_transcribe_voice = false
+
+# Logging
+[logging]
+level = "info"                  # trace, debug, info, warn, error
+format = "pretty"               # "pretty", "json", "compact"
+redact_secrets = true           # Replace secrets with [REDACTED] in logs
 ```
 
 ## Environment Variables

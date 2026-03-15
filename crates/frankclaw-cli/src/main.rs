@@ -402,7 +402,7 @@ async fn main() -> anyhow::Result<()> {
             let config_path = cli
                 .config
                 .clone()
-                .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+                .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
             let config = load_config(Some(&config_path), &state_dir)?;
             let mut config = config;
             if let Some(port) = port {
@@ -481,8 +481,8 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Config => {
             let config = load_config(cli.config.as_deref(), &state_dir)?;
-            let json = serde_json::to_string_pretty(&redact_config(&config))?;
-            println!("{json}");
+            let toml_str = toml::to_string_pretty(&redact_config(&config))?;
+            println!("{toml_str}");
         }
 
         Command::ConfigExample { channel } => {
@@ -634,7 +634,7 @@ async fn main() -> anyhow::Result<()> {
             let config_file_path = cli
                 .config
                 .clone()
-                .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+                .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
             let exit_code = run_security_audit(&config, &config_file_path, &state_dir, &format)?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
@@ -649,7 +649,7 @@ async fn main() -> anyhow::Result<()> {
             let config_path = cli
                 .config
                 .clone()
-                .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+                .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
             if config_path.exists() && !force {
                 anyhow::bail!(
                     "{}", t!("cmd.onboard.exists", path = config_path.display())
@@ -658,9 +658,9 @@ async fn main() -> anyhow::Result<()> {
 
             let gateway_token = frankclaw_crypto::generate_token();
             let config = build_onboard_config(&channel, &gateway_token)?;
-            let json = serde_json::to_string_pretty(&config)?;
+            let toml_str = config.to_toml_string()?;
             std::fs::create_dir_all(config_path.parent().unwrap_or(&state_dir))?;
-            std::fs::write(&config_path, json)?;
+            std::fs::write(&config_path, toml_str)?;
             restrict_file_permissions(&config_path);
 
             println!("{}", t!("cmd.onboard.created", path = config_path.display()));
@@ -675,7 +675,7 @@ async fn main() -> anyhow::Result<()> {
         Command::InstallSystemd { config } => {
             let config_path = config
                 .or_else(|| cli.config.clone())
-                .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+                .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
             let executable = std::env::current_exe().context(t!("ctx.failed_locate_binary").to_string())?;
             println!(
                 "{}",
@@ -1152,17 +1152,17 @@ async fn main() -> anyhow::Result<()> {
         Command::Init { force } => {
             let config_path = cli
                 .config
-                .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+                .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
 
             if config_path.exists() && !force {
                 anyhow::bail!("{}", t!("cmd.init.exists", path = config_path.display()));
             }
 
             let config = frankclaw_core::config::FrankClawConfig::default();
-            let json = serde_json::to_string_pretty(&config)?;
+            let toml_str = config.to_toml_string()?;
 
             std::fs::create_dir_all(config_path.parent().unwrap_or(&state_dir))?;
-            std::fs::write(&config_path, &json)?;
+            std::fs::write(&config_path, &toml_str)?;
             restrict_file_permissions(&config_path);
 
             println!("{}", t!("cmd.init.created", path = config_path.display()));
@@ -1189,7 +1189,7 @@ fn load_config(
 ) -> anyhow::Result<frankclaw_core::config::FrankClawConfig> {
     let config_path = path
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+        .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
 
     if !config_path.exists() {
         info!("no config found at {}, using defaults", config_path.display());
@@ -1527,13 +1527,13 @@ fn build_onboard_config(
 
 fn supported_channel_example(channel: &str) -> Option<&'static str> {
     match channel.trim() {
-        "web" => Some(include_str!("../../../examples/channels/web.json")),
-        "telegram" => Some(include_str!("../../../examples/channels/telegram.json")),
-        "discord" => Some(include_str!("../../../examples/channels/discord.json")),
-        "slack" => Some(include_str!("../../../examples/channels/slack.json")),
-        "signal" => Some(include_str!("../../../examples/channels/signal.json")),
-        "whatsapp" => Some(include_str!("../../../examples/channels/whatsapp.json")),
-        "email" => Some(include_str!("../../../examples/channels/email.json")),
+        "web" => Some(include_str!("../../../examples/channels/web.toml")),
+        "telegram" => Some(include_str!("../../../examples/channels/telegram.toml")),
+        "discord" => Some(include_str!("../../../examples/channels/discord.toml")),
+        "slack" => Some(include_str!("../../../examples/channels/slack.toml")),
+        "signal" => Some(include_str!("../../../examples/channels/signal.toml")),
+        "whatsapp" => Some(include_str!("../../../examples/channels/whatsapp.toml")),
+        "email" => Some(include_str!("../../../examples/channels/email.toml")),
         _ => None,
     }
 }
@@ -1814,7 +1814,7 @@ fn run_setup(
 
     let config_path = config_path_override
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+        .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
 
     println!("{}", t!("setup.title"));
     println!("{}", t!("setup.separator"));
@@ -2004,8 +2004,8 @@ fn run_setup(
 
     // --- Write config ---
     std::fs::create_dir_all(config_path.parent().unwrap_or(state_dir))?;
-    let json = serde_json::to_string_pretty(&config)?;
-    std::fs::write(&config_path, &json)?;
+    let toml_str = config.to_toml_string()?;
+    std::fs::write(&config_path, &toml_str)?;
     restrict_file_permissions(&config_path);
 
     println!();
@@ -2119,7 +2119,7 @@ async fn run_doctor(
     // Config file permissions (Unix only)
     let config_file_path = config_path
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_dir.join("frankclaw.json"));
+        .unwrap_or_else(|| state_dir.join("frankclaw.toml"));
     config_checks.extend(check_file_permissions(&config_file_path, "config file"));
 
     let warnings = collect_doctor_warnings(&config, state_dir)?;
@@ -3378,11 +3378,11 @@ mod tests {
     fn render_systemd_unit_contains_execstart() {
         let unit = render_systemd_unit(
             std::path::Path::new("/usr/local/bin/frankclaw"),
-            std::path::Path::new("/etc/frankclaw.json"),
+            std::path::Path::new("/etc/frankclaw.toml"),
             std::path::Path::new("/var/lib/frankclaw"),
         );
 
-        assert!(unit.contains("ExecStart=/usr/local/bin/frankclaw gateway --config /etc/frankclaw.json --state-dir /var/lib/frankclaw"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/frankclaw gateway --config /etc/frankclaw.toml --state-dir /var/lib/frankclaw"));
         assert!(unit.contains("WantedBy=default.target"));
     }
 
@@ -3577,23 +3577,23 @@ mod tests {
     }
 
     #[test]
-    fn supported_channel_examples_parse_as_json() {
+    fn supported_channel_examples_parse_as_toml() {
         let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/channels");
 
         for filename in [
-            "web.json",
-            "telegram.json",
-            "discord.json",
-            "slack.json",
-            "signal.json",
-            "whatsapp.json",
+            "web.toml",
+            "telegram.toml",
+            "discord.toml",
+            "slack.toml",
+            "signal.toml",
+            "whatsapp.toml",
         ] {
             let path = examples_dir.join(filename);
             let content = std::fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("failed to read {}: {}", path.display(), err));
-            serde_json::from_str::<serde_json::Value>(&content)
-                .unwrap_or_else(|err| panic!("invalid JSON in {}: {}", path.display(), err));
+            toml::from_str::<toml::Value>(&content)
+                .unwrap_or_else(|err| panic!("invalid TOML in {}: {}", path.display(), err));
         }
     }
 
@@ -3616,7 +3616,7 @@ mod tests {
         assert!(content.contains("gateway:"));
         assert!(content.contains("chromium:"));
         assert!(content.contains("FRANKCLAW_BROWSER_DEVTOOLS_URL: http://chromium:9222/"));
-        assert!(content.contains("./frankclaw.json:/config/frankclaw.json:ro"));
+        assert!(content.contains("./frankclaw.toml:/config/frankclaw.toml:ro"));
     }
 
     #[test]
@@ -3829,7 +3829,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).expect("should create temp dir");
-        let config_path = dir.join("frankclaw.json");
+        let config_path = dir.join("frankclaw.toml");
 
         // Build a config the same way setup does
         let mut config = FrankClawConfig::default();
@@ -3854,8 +3854,8 @@ mod tests {
             },
         );
 
-        let json = serde_json::to_string_pretty(&config).expect("should serialize");
-        std::fs::write(&config_path, &json).expect("should write");
+        let toml_str = config.to_toml_string().expect("should serialize");
+        std::fs::write(&config_path, &toml_str).expect("should write");
 
         // Verify it can be loaded back
         let loaded = FrankClawConfig::load_from_path(&config_path)

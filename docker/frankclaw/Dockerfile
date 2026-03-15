@@ -23,7 +23,7 @@ COPY --from=builder /app/target/release/frankclaw /usr/local/bin/frankclaw
 
 USER frankclaw
 
-ENV FRANKCLAW_CONFIG=/config/frankclaw.json
+ENV FRANKCLAW_CONFIG=/config/frankclaw.toml
 ENV FRANKCLAW_STATE_DIR=/var/lib/frankclaw
 
 EXPOSE 18789
